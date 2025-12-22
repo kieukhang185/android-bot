@@ -214,6 +214,8 @@ def main():
     reset_tmp_dir(tmp)
 
     i = 0
+    fish = 1
+    throw = 1
     while True:
         t0 = 0
         # screen_path = os.path.join(tmp, f"screen_{device_id.replace(':','_')}_{i:06d}.png")
@@ -229,7 +231,8 @@ def main():
             screencap(device_id, screen_path)
             if not is_btn_absent(screen_path, empty):
                 emit({"type": "error", "msg": "out_of_bait", "i": i})
-            # emit({"type": "step", "msg": "started_throw", "i": i})
+            emit({"type": "step", "msg": f"started_throw: {throw}", "i": i})
+            throw += 1
         else:
             # 1464:845
             if is_btn_absent(screen_path, btn_close):
@@ -277,12 +280,13 @@ def main():
             elif not is_btn_absent(screen_path, congtats):
                 # random tap outof congrats popup
                 # print("Found CONGRATS")
-                emit({"type": "step", "i": i, "msg": "fishing_success"})
+                emit({"type": "step", "i": i, "msg": f"fishing_success: {fish}"})
                 tap(device_id, 1198, 743)
                 time.sleep(0.1)
                 screencap(device_id, screen_path)
                 click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
                 time.sleep(0.4)
+                fish += 1
             else:
                 time.sleep(5)
 

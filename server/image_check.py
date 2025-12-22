@@ -5,6 +5,7 @@ import numpy as np
 from utils import swipe
 import argparse
 
+
 @dataclass
 class Hit:
     template_id: int
@@ -12,10 +13,12 @@ class Hit:
     ghost_box_xywh: Tuple[int, int, int, int]  # full coords
     verify_score: float = 0.0
 
+
 # ---------- your swipe utils ----------
 def center_of_box(box_xywh):
     x, y, w, h = box_xywh
     return (x + w // 2, y + h // 2)
+
 
 # +-jitter
 def jitter_point(pt, jitter=8):
@@ -29,6 +32,7 @@ def swipe_pairs(device_id: str, pairs, duration_ms=320, jitter=8):
         tx, ty = jitter_point(dst, jitter)
         swipe(device_id, sx, sy, tx, ty, duration_ms)
         time.sleep(0.25)
+
 
 def build_swipe_plan_sorted(vision_out):
     matches = vision_out.get("matches", [])
@@ -69,7 +73,6 @@ def parse_profile(profile: Dict[str, Any]):
     verify_method = str(matching.get("verify_method", "TM_CCOEFF_NORMED"))
     verify_inset = int(matching.get("verify_threshold", 6))
 
-
     return right_rois, mid_roi, threshold, cluster_dx, max_hits, blur_ksize, verify_enabled, verify_threshold, verify_method, verify_inset
 
 
@@ -104,9 +107,13 @@ def find_all_hits_in_mid(mid_bgr, tpl_bgr, threshold: float, max_hits: int, blur
     return hits
 
 
-def verify_hit_with_template(screen_bgr: np.ndarray, ghost_box_xywh: Tuple[int,int,int,int],
-                             template_bgr: np.ndarray, method: int,
-                             threshold: float, inset: int):
+def verify_hit_with_template(
+        screen_bgr: np.ndarray,
+        ghost_box_xywh: Tuple[int,int,int,int],
+        template_bgr: np.ndarray,
+        method: int,
+        threshold: float, inset: int
+):
     x, y, w, h = ghost_box_xywh
     ghost = screen_bgr[y:y+h, x:x+w]
     if ghost is None or ghost.size == 0:

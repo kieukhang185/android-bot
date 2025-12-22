@@ -10,42 +10,12 @@ import cv2
 import random
 import numpy as np
 
-from vision_layout_dinov2 import match_ghost_to_real, LayoutCfg, ROI, HeuristicCfg
+from image_check import android_bot, swipe_pairs, run_adb, tap
 import warnings
 
 warnings.filterwarnings("ignore", message="xFormers is not available")
 warnings.filterwarnings("ignore", message="Using cache found in /home/vagrant/.cache/torch/hub/facebookresearch_dinov2_main")
 
-def center_of_box(box_xywh):
-    x, y, w, h = box_xywh
-    return (x + w // 2, y + h // 2)
-
-def jitter_point(pt, jitter=8):
-    return (pt[0] + random.randint(-jitter, jitter),
-            pt[1] + random.randint(-jitter, jitter))
-
-def swipe_pairs(device_id: str, pairs, duration_ms=320, jitter=8):
-    """
-    pairs: list of (from_xy, to_xy) where each is (x,y) in screen pixels.
-    """
-    for (src, dst) in pairs:
-        sx, sy = jitter_point(src, jitter)
-        tx, ty = jitter_point(dst, jitter)
-        swipe(device_id, sx, sy, tx, ty, duration_ms)
-        time.sleep(0.15)
-
-# -------------------------
-# Generic ADB helpers
-# -------------------------
-def run_adb(args: List[str], device_id: Optional[str] = None, timeout: int = 20) -> str:
-    cmd = ["adb"]
-    if device_id:
-        cmd += ["-s", device_id]
-    cmd += args
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    if p.returncode != 0:
-        raise RuntimeError(p.stderr.strip() or p.stdout.strip() or f"adb failed: {cmd}")
-    return p.stdout
 
 def screencap(device_id: str, out_path: str) -> str:
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -55,14 +25,6 @@ def screencap(device_id: str, out_path: str) -> str:
     if p.returncode != 0:
         raise RuntimeError(p.stderr.decode("utf-8", "ignore").strip() or "screencap failed")
     return out_path
-
-# Generic UI-test actions (not app/game specific)
-def tap(device_id: str, x: int, y: int):
-    run_adb(["shell", "input", "tap", str(x), str(y)], device_id=device_id)
-
-def swipe(device_id: str, x1: int, y1: int, x2: int, y2: int, duration_ms: int = 300):
-    run_adb(["shell", "input", "swipe", str(x1), str(y1), str(x2), str(y2), str(duration_ms)], device_id=device_id)
-
 # -------------------------
 # Template matching utilities (optional)
 # -------------------------
@@ -71,20 +33,6 @@ def read_image(path: str) -> np.ndarray:
     if img is None:
         raise RuntimeError(f"Cannot read image: {path}")
     return img
-
-# def match_template(haystack_bgr: np.ndarray, needle_bgr: np.ndarray, roi: Optional[Tuple[int,int,int,int]] = None) -> Tuple[float, Tuple[int,int], Tuple[int,int]]:
-#     hs = haystack_bgr
-#     offx, offy = 0, 0
-#     if roi:
-#         x1,y1,x2,y2 = roi
-#         hs = haystack_bgr[y1:y2, x1:x2]
-#         offx, offy = x1, y1
-#     res = cv2.matchTemplate(hs, needle_bgr, cv2.TM_CCOEFF_NORMED)
-#     _, max_val, _, max_loc = cv2.minMaxLoc(res)
-#     h, w = needle_bgr.shape[:2]
-#     tl = (max_loc[0] + offx, max_loc[1] + offy)
-#     br = (tl[0] + w, tl[1] + h)
-#     return float(max_val), tl, br
 
 def match_template(
     haystack_bgr: np.ndarray,
@@ -162,7 +110,6 @@ def click_template(device, screen_path, template_path, threshold=0.85):
 
     img = cv2.imread(screen_path)
     tmpl = cv2.imread(template_path)
-
     if img is None:
         return False
 
@@ -179,7 +126,7 @@ def click_template(device, screen_path, template_path, threshold=0.85):
     cy = max_loc[1] + h // 2
 
     run_adb(["shell", "input", "tap", str(cx), str(cy)], device_id=device)
-    print(f"Clicked on: {cx}:{cy}")
+    print(f"Clicked: {cx}:{cy}")
     return True
 
 def serializable_data(data):
@@ -230,40 +177,7 @@ def is_btn_absent(
         roi=roi,
     )
 
-    emit({
-        "type": "check",
-        "target": "btn_close",
-        "present": present,
-        "score": round(score, 3),
-    })
-
     return not present
-
-
-# -------------------------
-# DINOv2 vision config
-# -------------------------
-VISION_CFG = LayoutCfg(
-    right_roi=ROI(0.87, 0.08, 0.99, 0.92),
-    middle_roi=ROI(0.12, 0.55, 0.88, 0.73),
-    right_heur=HeuristicCfg(min_area_ratio=0.001, max_area_ratio=0.12, min_side_px=28),
-    middle_heur=HeuristicCfg(min_area_ratio=0.001, max_area_ratio=0.12, min_side_px=28),
-    sort_right="top_to_bottom",
-    sort_middle="left_to_right",
-)
-
-def build_swipe_plan_sorted(vision_out):
-    matches = vision_out.get("matches", [])
-    matches = sorted(matches, key=lambda m: m["ghost_index"])  # hoặc sort theo box x/y
-    return [(center_of_box(m["real_box"]), center_of_box(m["ghost_box"])) for m in matches]
-
-def run_dinov2(screen_path: str, debug_path: str) -> Dict[str, Any]:
-    return match_ghost_to_real(
-        screenshot_path=screen_path,
-        cfg=VISION_CFG,
-        debug_out_path=debug_path,
-        model_name="dinov2_vits14",
-    )
 
 # -------------------------
 # Central loop (generic)
@@ -301,7 +215,6 @@ def main():
     interval_ms = args["interval_ms"]
     workdir = args["workdir"]
     tmp = f"{workdir}/tmp"
-    real_path = os.path.realpath(f"./{tmp}/*")
     btn_throw = f"{workdir}/btn_throw.png"
     btn_close = f"{workdir}/btn_close.png"
     btn_done = f"{workdir}/btn_done.png"
@@ -314,78 +227,73 @@ def main():
 
     i = 0
     while True:
+        t0 = 0
         screen_path = os.path.join(tmp, f"screen_{device_id.replace(':','_')}_{i:06d}.png")
-        debug_path  = os.path.join(tmp, f"debug_{device_id.replace(':','_')}_{i:06d}.png")
-
         try:
             run_vision = False
             screencap(device_id, screen_path)
             emit({"type": "step", "msg": "screencap_ok", "i": i, "screen": screen_path})
-            time.sleep(1)
+            time.sleep(0.5)
 
             # Check and click on 'throw btn'
-            if check_exists(screen_path, btn_throw, REAL_THRESHOLD):
+            if not is_btn_absent(screen_path, btn_throw):
                 click_template(device_id, screen_path, btn_throw, REAL_THRESHOLD)
+                # if is_btn_absent(screen_path, btn_throw):
+                #     emit({"type": "error", "msg": "started_throw", "i": i, "screen": btn_throw})
                 emit({"type": "step", "msg": "started_throw", "i": i, "screen": btn_throw})
             else:
-                if check_exists(screen_path, btn_close, REAL_THRESHOLD):
+                if not is_btn_absent(screen_path, btn_close):
                     click_template(device_id, screen_path, btn_close, REAL_THRESHOLD)
                 else:
                     emit({"type": "error", "i": i, "msg": "Not in fishing position!"})
-                    sys.exit(1)
 
-            emit({"type": "step", "msg": "Waite 10 seconds", "i": i})
-            time.sleep(10)
+            emit({"type": "step", "msg": "Waite 15 seconds", "i": i})
+            time.sleep(12)
             max_try = 10
-            waite_second = 2
+            waite_second = 1
             for i in range(max_try):
                 screencap(device_id, screen_path)
-                time.sleep(1)
+                time.sleep(0.5)
                 if is_btn_absent(screen_path, btn_close):
-                    emit({"type": "decision","msg": "btn_close found → continue main flow"})
+                    emit({"type": "decision","msg": "check_fishing"})
                     screencap(device_id, screen_path)
-                    time.sleep(1)
+                    time.sleep(0.5)
                     if not is_btn_absent(screen_path, btn_done):
                         click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
                         emit({"type": "step", "msg": "fishing_failed", "i": i})
                         run_vision = False
+                        time.sleep(0.5)
                         break
                     else:
                         emit({"type": "step", "msg": "fishing_success", "i": i})
                         run_vision = True
+                        time.sleep(0.5)
                         break
                 time.sleep(waite_second)
-                emit({"type": "step", "msg": f"Waite {waite_second} seconds", "i": i})
 
             if run_vision:
-                out = run_dinov2(screen_path, debug_path)
-                emit({"type": "vision", "i": i, "matchesCount": len(out.get("matches", [])), "debug": debug_path})
-                swipe_plan = build_swipe_plan_sorted(out)
-
-                # IMPORTANT: For QA/testing YOUR app: execute planned swipes
-                swipe_pairs(device_id, swipe_plan, duration_ms=320, jitter=10)
-
-                emit({"type": "step", "i": i, "msg": f"swiped {len(swipe_plan)} pairs"})
-
-                time.sleep(2)
+                pairs = android_bot(screen_path)
+                swipe_pairs(device_id, pairs, duration_ms=320, jitter=8)
+                emit({"type": "step", "i": i, "msg": f"swiped {len(pairs)} pairs"})
+                time.sleep(0.5)
                 screencap(device_id, screen_path)
-                time.sleep(1)
+                time.sleep(0.5)
 
                 # Check cau ca thanh cong khong se close popup
                 # pts = match_template(screen_path, congtats, REAL_THRESHOLD)
-
                 if not is_btn_absent(screen_path, congtats):
                     # random tap outof congrats popup
                     print("Found CONGRATS")
-                    tap(device_id, 100, 80)
+                    tap(device_id, 1198, 743)
+                    click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
 
         except Exception as e:
             emit({"type": "error", "i": i, "msg": str(e)})
 
-        # i += 1
-        # dt = time.time() - t0
-        # sleep_s = max(0.0, interval_ms/1000.0 - dt)
-        # time.sleep(sleep_s)
+        i += 1
+        dt = time.time() - t0
+        sleep_s = max(0.0, interval_ms/1000.0 - dt)
+        time.sleep(sleep_s)
 
 if __name__ == "__main__":
     main()

@@ -12,5 +12,5 @@ mkdir -p ~/project && cd ~/project
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip wheel
-pip install opencv-python numpy pillow
+pip install opencv-python numpy pillow scipy
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu

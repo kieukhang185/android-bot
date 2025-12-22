@@ -1,39 +1,50 @@
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>Device Auto Dashboard (Central Python)</title>
+  <meta charset="UTF-8" />
+  <title>Android Bot Dashboard</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="wrap">
-    <header>
-      <h1>Device Auto Dashboard (Central Python)</h1>
-      <div class="actions">
-        <button id="reload">Reload devices</button>
-        <label>
-          Interval (ms)
-          <input id="interval" type="number" value="1200" min="300" step="100" />
-        </label>
-      </div>
-    </header>
+  <main class="container">
+    <section class="stack">
 
-    <section class="grid">
+      <!-- DEVICES -->
       <div class="card">
-        <h2>Devices</h2>
+        <div class="cardhead">
+          <h2>Devices</h2>
+          <div class="cardactions">
+            <input id="deviceSearch" type="text" placeholder="Search device..." class="search" />
+            <button id="startAll">Start all</button>
+            <button id="stopAll">Stop all</button>
+          </div>
+        </div>
         <div id="devices" class="devices"></div>
       </div>
 
-      <div class="card">
-        <h2>Live Logs</h2>
+      <!-- LOGS -->
+      <div class="card" id="logsCard">
+        <div class="cardhead">
+          <h2>Live Logs</h2>
+          <div class="cardactions">
+            <select id="logDeviceFilter" class="select">
+              <option value="">All devices</option>
+            </select>
+
+            <button id="toggleLogs">Hide</button>
+            <button id="clearLogs">Clear</button>
+
+            <label class="chk">
+              <input id="autoScroll" type="checkbox" checked />
+              Auto-scroll
+            </label>
+          </div>
+        </div>
         <div id="logs" class="logs"></div>
       </div>
-    </section>
 
-    <p class="hint">
-      Start = spawn a long-running <code>auto_puzzle.py</code> per device. Logs are streamed via SSE.
-    </p>
-  </div>
+    </section>
+  </main>
 
   <script src="app.js"></script>
 </body>

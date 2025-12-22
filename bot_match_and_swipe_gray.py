@@ -1,3 +1,24 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+bot_match_and_swipe_gray.py
+
+UPDATE: Added a verification step that uses COLOR template matching within each found ghost crop.
+This helps reduce false positives and disambiguate same-shape-different-color icons.
+
+- Phase 1: grayscale+blur match to find positions in the middle ROI
+- Phase 2: verify each hit by matching the COLOR template against the ghost crop (ROI-local)
+
+Config:
+- Root: output.out_root, output.templates_dir, debug
+- Profile: right_icons.rois (6), mid_roi, matching.{threshold, cluster_delta_x, max_hits, blur_ksize,
+          verify_enabled, verify_threshold, verify_method, verify_inset}
+
+Run:
+  python bot_match_and_swipe_gray.py --screen screen.png --config config.json
+"""
+
+import argparse
 import json
 import os
 import time
@@ -10,61 +31,54 @@ import numpy as np
 
 
 # =========================
-# YOUR SWIPE UTILITIES
+# SWIPE UTILITIES (plug your adb)
 # =========================
 def center_of_box(box_xywh):
     x, y, w, h = box_xywh
     return (x + w // 2, y + h // 2)
 
-def jitter_point(pt, jitter=8):
+def jitter_point(pt, jitter=5):
     return (pt[0] + random.randint(-jitter, jitter),
             pt[1] + random.randint(-jitter, jitter))
 
 def swipe(device_id: str, sx: int, sy: int, tx: int, ty: int, duration_ms: int):
-    """
-    TODO: Replace with your adb swipe implementation.
-    Example:
-      os.system(f'adb -s {device_id} shell input swipe {sx} {sy} {tx} {ty} {duration_ms}')
-    """
+    # TODO: replace with your adb swipe implementation
     print(f"[SWIPE] {device_id}: ({sx},{sy}) -> ({tx},{ty}) dur={duration_ms}ms")
 
-def swipe_pairs(device_id: str, pairs, duration_ms=320, jitter=8):
-    """
-    pairs: list of (from_xy, to_xy) where each is (x,y) in screen pixels.
-    """
+def swipe_pairs(device_id: str, pairs, duration_ms=320, jitter=5):
     for (src, dst) in pairs:
         sx, sy = jitter_point(src, jitter)
         tx, ty = jitter_point(dst, jitter)
         swipe(device_id, sx, sy, tx, ty, duration_ms)
         time.sleep(0.15)
-
+ 
 def build_swipe_plan_sorted(vision_out):
     matches = vision_out.get("matches", [])
     matches = sorted(matches, key=lambda m: m["ghost_index"])  # left->right
     return [(center_of_box(m["real_box"]), center_of_box(m["ghost_box"])) for m in matches]
 
 
-# =========================
-# DATA STRUCT
-# =========================
 @dataclass
 class Hit:
     template_id: int
     score: float
-    ghost_box_xywh: Tuple[int, int, int, int]  # FULL screen coords
+    ghost_box_xywh: Tuple[int, int, int, int]  # full coords
+    verify_score: float = 0.0
 
 
 # =========================
 # CONFIG
 # =========================
-def load_profile(config_path: str, screen_w: int, screen_h: int) -> Dict[str, Any]:
-    with open(config_path, "r", encoding="utf-8") as f:
-        cfg = json.load(f)
+def load_config(path: str) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def load_profile(cfg: Dict[str, Any], w: int, h: int) -> Dict[str, Any]:
     for p in cfg.get("profiles", []):
-        if p.get("screen", {}).get("w") == screen_w and p.get("screen", {}).get("h") == screen_h:
+        if p.get("screen", {}).get("w") == w and p.get("screen", {}).get("h") == h:
             return p
-    available = [f'{p.get("screen", {}).get("w")}x{p.get("screen", {}).get("h")}' for p in cfg.get("profiles", [])]
-    raise RuntimeError(f"No profile for {screen_w}x{screen_h}. Available: {available}")
+    avail = [f'{p.get("screen", {}).get("w")}x{p.get("screen", {}).get("h")}' for p in cfg.get("profiles", [])]
+    raise RuntimeError(f"No profile for {w}x{h}. Available: {avail}")
 
 def parse_profile(profile: Dict[str, Any]):
     right = profile["right_icons"]["rois"]
@@ -76,38 +90,30 @@ def parse_profile(profile: Dict[str, Any]):
     mid_roi = (int(m["x"]), int(m["y"]), int(m["w"]), int(m["h"]))
 
     matching = profile.get("matching", {})
-    threshold = float(matching.get("threshold", 0.50))        # lowered default
-    cluster_dx = int(matching.get("cluster_delta_x", 50))     # usually ~= half icon width
-    max_hits_per_template = int(matching.get("max_hits", 20))
-    blur_ksize = int(matching.get("blur_ksize", 7))           # 5/7/9 are typical
+    threshold = float(matching.get("threshold", 0.50))
+    cluster_dx = int(matching.get("cluster_delta_x", 55))
+    max_hits = int(matching.get("max_hits", 20))
+    blur_ksize = int(matching.get("blur_ksize", 7))
 
-    debug = bool(profile.get("debug", True))
-    return right_rois, mid_roi, threshold, cluster_dx, max_hits_per_template, blur_ksize, debug
+    verify_enabled = bool(matching.get("verify_enabled", True))
+    verify_threshold = float(matching.get("verify_threshold", 0.55))
+    verify_method_name = str(matching.get("verify_method", "TM_CCOEFF_NORMED"))
+    verify_method = getattr(cv2, verify_method_name, cv2.TM_CCOEFF_NORMED)
+    verify_inset = int(matching.get("verify_inset", 6))
+
+    return right_rois, mid_roi, threshold, cluster_dx, max_hits, blur_ksize, verify_enabled, verify_threshold, verify_method, verify_inset
 
 
 # =========================
-# PREPROCESS (GRAY + BLUR)
+# MATCHING
 # =========================
-def preprocess_gray_blur(img_bgr: np.ndarray, blur_ksize: int = 7) -> np.ndarray:
+def preprocess_gray_blur(img_bgr: np.ndarray, blur_ksize: int) -> np.ndarray:
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     k = blur_ksize if blur_ksize % 2 == 1 else blur_ksize + 1
-    blur = cv2.GaussianBlur(gray, (k, k), 0)
-    return blur
+    return cv2.GaussianBlur(gray, (k, k), 0)
 
-
-# =========================
-# MULTI-HIT SEARCH (LOCAL ROI)
-# =========================
-def find_all_hits_in_mid(
-    mid_bgr: np.ndarray,
-    tpl_bgr: np.ndarray,
-    threshold: float,
-    max_hits: int,
-    blur_ksize: int,
-) -> List[Tuple[int, int, float, int, int]]:
-    """
-    Returns list of (x, y, score, tw, th) in MID-LOCAL coords.
-    """
+def find_all_hits_in_mid(mid_bgr: np.ndarray, tpl_bgr: np.ndarray,
+                         threshold: float, max_hits: int, blur_ksize: int):
     mid = preprocess_gray_blur(mid_bgr, blur_ksize)
     tpl = preprocess_gray_blur(tpl_bgr, blur_ksize)
 
@@ -118,60 +124,78 @@ def find_all_hits_in_mid(
 
     work = mid.copy()
     hits = []
-
     for _ in range(max_hits):
         res = cv2.matchTemplate(work, tpl, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, max_loc = cv2.minMaxLoc(res)
         if float(max_val) < threshold:
             break
-
-        x, y = max_loc  # local
+        x, y = max_loc
         hits.append((x, y, float(max_val), tw, th))
 
-        # mask matched region to find next
         pad = 6
-        x1 = max(0, x - pad)
-        y1 = max(0, y - pad)
-        x2 = min(mw, x + tw + pad)
-        y2 = min(mh, y + th + pad)
+        x1, y1 = max(0, x-pad), max(0, y-pad)
+        x2, y2 = min(mw, x+tw+pad), min(mh, y+th+pad)
         work[y1:y2, x1:x2] = 0
-
     return hits
 
+def verify_hit_with_template(screen_bgr: np.ndarray, ghost_box_xywh: Tuple[int,int,int,int],
+                             template_bgr: np.ndarray, method: int,
+                             threshold: float, inset: int):
+    x, y, w, h = ghost_box_xywh
+    ghost = screen_bgr[y:y+h, x:x+w]
+    if ghost is None or ghost.size == 0:
+        return False, 0.0
 
+    if inset > 0 and w > 2*inset and h > 2*inset:
+        ghost = ghost[inset:-inset, inset:-inset]
+        if template_bgr.shape[0] > 2*inset and template_bgr.shape[1] > 2*inset:
+            template_bgr = template_bgr[inset:-inset, inset:-inset]
+
+    gh, gw = ghost.shape[:2]
+    tpl = cv2.resize(template_bgr, (gw, gh), interpolation=cv2.INTER_AREA)
+
+    res = cv2.matchTemplate(ghost, tpl, method)
+    min_val, max_val, _, _ = cv2.minMaxLoc(res)
+
+    if method in (cv2.TM_SQDIFF, cv2.TM_SQDIFF_NORMED):
+        score = float(1.0 - min_val)
+    else:
+        score = float(max_val)
+
+    return (score >= float(threshold)), float(score)
+
+
+# =========================
+# DEDUP + OUTPUT
+# =========================
 def cluster_hits_by_x(hits: List[Hit], delta_x: int) -> List[Hit]:
-    """
-    Cluster across ALL templates by x-center (keep best score per cluster).
-    """
     if not hits:
         return []
-
     def x_center(h: Hit) -> float:
         x, _, w, _ = h.ghost_box_xywh
-        return x + w / 2.0
+        return x + w/2.0
 
     hits_sorted = sorted(hits, key=x_center)
-    clusters: List[List[Hit]] = [[hits_sorted[0]]]
-
+    clusters = [[hits_sorted[0]]]
     for h in hits_sorted[1:]:
         if abs(x_center(h) - x_center(clusters[-1][0])) < delta_x:
             clusters[-1].append(h)
         else:
             clusters.append([h])
 
-    return [max(c, key=lambda h: h.score) for c in clusters]
+    def best_key(h: Hit):
+        return (h.verify_score, h.score)
 
+    return [max(c, key=best_key) for c in clusters]
 
-# =========================
-# VISION OUT (FOR YOUR build_swipe_plan_sorted)
-# =========================
-def make_vision_out(right_rois: List[Tuple[int,int,int,int]], hits_sorted_lr: List[Hit]) -> Dict[str, Any]:
+def make_vision_out(right_rois, hits_sorted_lr: List[Hit]) -> Dict[str, Any]:
     matches = []
     for idx, h in enumerate(hits_sorted_lr):
         matches.append({
             "ghost_index": idx,
             "template_id": int(h.template_id),
             "score": float(h.score),
+            "verify_score": float(h.verify_score),
             "real_box": tuple(map(int, right_rois[h.template_id])),
             "ghost_box": tuple(map(int, h.ghost_box_xywh)),
         })
@@ -179,102 +203,134 @@ def make_vision_out(right_rois: List[Tuple[int,int,int,int]], hits_sorted_lr: Li
 
 
 # =========================
-# MAIN
+# BOT ENTRY
 # =========================
-def main():
-    device_id = "YOUR_DEVICE_ID"  # TODO
+def android_bot(screen_path: str, config_path: str = "config.json"):
+    cfg = load_config(config_path)
 
-    screen = cv2.imread("server/templates/tmp/screen_10.0.2.2_5555_000000.png")
+    output_cfg = cfg.get("output", {}) or {}
+    out_root = output_cfg.get("out_root", "out")
+    templates_dir = output_cfg.get("templates_dir", "templates")
+    debug = bool(cfg.get("debug", True))
+
+    screen = cv2.imread(screen_path)
     if screen is None:
-        raise RuntimeError("Cannot read screen.png")
+        raise RuntimeError(f"Cannot read image at: {screen_path}")
 
     sh, sw = screen.shape[:2]
-    profile = load_profile("server/config.json", sw, sh)
-    right_rois, mid_roi, threshold, cluster_dx, max_hits, blur_ksize, debug = parse_profile(profile)
+    profile = load_profile(cfg, sw, sh)
+    right_rois, mid_roi, threshold, cluster_dx, max_hits, blur_ksize, verify_enabled, verify_threshold, verify_method, verify_inset = parse_profile(profile)
 
-    out_root = "out"
-    os.makedirs(out_root, exist_ok=True)
+    if debug:
+        os.makedirs(out_root, exist_ok=True)
+        tpl_out_dir = os.path.join(out_root, templates_dir)
+        os.makedirs(tpl_out_dir, exist_ok=True)
+    else:
+        tpl_out_dir = ""
 
     mx, my, mw, mh = mid_roi
     mid_bgr = screen[my:my+mh, mx:mx+mw]
-    if mid_bgr.size == 0:
-        raise RuntimeError("MID_ROI is empty. Check x,y,w,h.")
+    if mid_bgr is None or mid_bgr.size == 0:
+        raise RuntimeError("mid_roi crop empty - check config")
 
     if debug:
         cv2.imwrite(os.path.join(out_root, "mid_roi.png"), mid_bgr)
 
-    # Save right templates (optional debug)
-    if debug:
-        os.makedirs(os.path.join(out_root, "templates"), exist_ok=True)
-        for i, (x,y,w,h) in enumerate(right_rois):
-            crop = screen[y:y+h, x:x+w]
-            cv2.imwrite(os.path.join(out_root, "templates", f"icon_{i:02d}.png"), crop)
-
-    # 1) Find hits for each template in MID (local), convert to FULL coords
-    all_hits: List[Hit] = []
+    # Cache template crops from right ROIs + save
+    templates_bgr: Dict[int, np.ndarray] = {}
     for tid, (rx, ry, rw, rh) in enumerate(right_rois):
-        tpl_bgr = screen[ry:ry+rh, rx:rx+rw]
-        if tpl_bgr.size == 0:
-            raise RuntimeError(f"Right ROI #{tid} empty. Check x,y,w,h.")
+        crop = screen[ry:ry+rh, rx:rx+rw]
+        templates_bgr[int(tid)] = crop
+        if debug:
+            cv2.imwrite(os.path.join(tpl_out_dir, f"icon_{tid:02d}.png"), crop)
 
-        local_hits = find_all_hits_in_mid(
-            mid_bgr=mid_bgr,
-            tpl_bgr=tpl_bgr,
-            threshold=threshold,
-            max_hits=max_hits,
-            blur_ksize=blur_ksize,
-        )
+    # Phase1: find hits; Phase2: verify hits
+    all_hits: List[Hit] = []
+    for tid, tpl_bgr in templates_bgr.items():
+        if tpl_bgr is None or tpl_bgr.size == 0:
+            continue
+
+        local_hits = find_all_hits_in_mid(mid_bgr, tpl_bgr, threshold, max_hits, blur_ksize)
 
         for (lx, ly, sc, tw, th) in local_hits:
-            # convert local box -> full screen xywh
-            gx = mx + lx
-            gy = my + ly
-            all_hits.append(Hit(
-                template_id=tid,
-                score=sc,
-                ghost_box_xywh=(int(gx), int(gy), int(tw), int(th))
-            ))
+            gx, gy = mx + int(lx), my + int(ly)
+            ghost_box = (int(gx), int(gy), int(tw), int(th))
+
+            v_ok, v_score = (True, 0.0)
+            if verify_enabled:
+                v_ok, v_score = verify_hit_with_template(
+                    screen_bgr=screen,
+                    ghost_box_xywh=ghost_box,
+                    template_bgr=tpl_bgr,
+                    method=verify_method,
+                    threshold=verify_threshold,
+                    inset=verify_inset,
+                )
+
+            if (not verify_enabled) or v_ok:
+                all_hits.append(Hit(template_id=int(tid), score=float(sc), ghost_box_xywh=ghost_box, verify_score=float(v_score)))
 
     if not all_hits:
-        print("❌ No hits found.")
-        print("Try: lower threshold (0.45-0.55), increase blur_ksize (7/9), or fix MID_ROI.")
-        return
+        return [], {"matches": []}
 
-    # 2) Cluster duplicates across templates by X, keep best score
+    # Dedup by X
     hits_clean = cluster_hits_by_x(all_hits, cluster_dx)
 
-    # 3) Sort left -> right
-    hits_sorted = sorted(hits_clean, key=lambda h: h.ghost_box_xywh[0] + h.ghost_box_xywh[2] / 2.0)
+    # Sort left->right
+    hits_sorted = sorted(hits_clean, key=lambda h: h.ghost_box_xywh[0] + h.ghost_box_xywh[2]/2.0)
 
-    # 4) Build vision_out + pairs
     vision_out = make_vision_out(right_rois, hits_sorted)
     pairs = build_swipe_plan_sorted(vision_out)
 
-    # Debug print
-    print(f"\n✅ Profile: {profile.get('name')} ({sw}x{sh})")
-    print(f"threshold={threshold}, blur_ksize={blur_ksize}, cluster_dx={cluster_dx}, max_hits={max_hits}")
-    print("\n✅ Matches (left->right):")
-    for m in vision_out["matches"]:
-        print(f"idx={m['ghost_index']:02d} tid={m['template_id']} score={m['score']:.2f} "
-              f"real_box={m['real_box']} ghost_box={m['ghost_box']}")
-
-    print("\n🧭 Swipe plan (src -> dst):")
-    for i, (src, dst) in enumerate(pairs, start=1):
-        print(f"{i:02d}. {src} -> {dst}")
-
-    # Optional overlay
     if debug:
         dbg = screen.copy()
         for m in vision_out["matches"]:
             x, y, w, h = m["ghost_box"]
             cv2.rectangle(dbg, (x, y), (x+w, y+h), (0, 255, 0), 2)
-            cv2.putText(dbg, f"id={m['template_id']} {m['score']:.2f}", (x, y-6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+            cv2.putText(
+                dbg,
+                f"id={m['template_id']} s={m['score']:.2f} v={m['verify_score']:.2f}",
+                (x, max(0, y-6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (0, 255, 0),
+                1,
+                cv2.LINE_AA,
+            )
         cv2.imwrite(os.path.join(out_root, "debug_hits.png"), dbg)
-        print(f"\n🖼️ Saved overlay: {out_root}/debug_hits.png")
 
-    # 5) Execute swipes
-    swipe_pairs(device_id, pairs, duration_ms=320, jitter=8)
+        with open(os.path.join(out_root, "vision_out.json"), "w", encoding="utf-8") as f:
+            json.dump(vision_out, f, ensure_ascii=False, indent=2)
+
+    return pairs, vision_out
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--screen", default="screen.png")
+    ap.add_argument("--config", default="config.json")
+    ap.add_argument("--device", default="")
+    ap.add_argument("--do-swipe", action="store_true")
+    args = ap.parse_args()
+
+    pairs, vision_out = android_bot(args.screen, args.config)
+
+    if not pairs:
+        print("❌ No hits found. Lower threshold / fix ROIs / tweak preprocess/verify.")
+        return
+
+    print("\n✅ Matches (left->right):")
+    for m in vision_out["matches"]:
+        print(f"idx={m['ghost_index']:02d} tid={m['template_id']} shape={m['score']:.2f} verify={m['verify_score']:.2f} ghost={m['ghost_box']}")
+
+    print("\n🧭 Swipe plan:")
+    for i, (src, dst) in enumerate(pairs, start=1):
+        print(f"{i:02d}. {src} -> {dst}")
+
+    if args.do_swipe:
+        if not args.device:
+            raise RuntimeError("--device is required when --do-swipe is set")
+        swipe_pairs(args.device, pairs, duration_ms=320, jitter=5)
 
 
 if __name__ == "__main__":

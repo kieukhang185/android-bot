@@ -47,6 +47,9 @@ function logLine(payload) {
 
   // message only (as before)
   const msg = payload.msg ?? payload.message ?? "";
+  const type = payload.type
+  // console.log("Type ", type)
+  // if (type === "error") postJSON("/auto/stop", { deviceId: d.id });
 
   const div = document.createElement("div");
   div.className = "logline";

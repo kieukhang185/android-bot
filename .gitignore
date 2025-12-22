@@ -1,3 +1,5 @@
 server/node_modules
 server/.venv
 server/__pycache__
+server/out
+server/templates/tmp

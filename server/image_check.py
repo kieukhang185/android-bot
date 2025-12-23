@@ -194,7 +194,7 @@ def combine_score(shape_score, color_dist,
     return w_shape * shape_score + w_color * color_score
 
 # ---------- android_bot entrypoint ----------
-def android_bot(screen_path: str, config_path: str = "config.json"):
+def android_bot(device_id: str, screen_path: str, config_path: str = "config.json"):
     if not isinstance(screen_path, (str, bytes, os.PathLike)):
         raise TypeError(f"screen_path must be a path string, got: {type(screen_path)}")
 
@@ -232,7 +232,7 @@ def android_bot(screen_path: str, config_path: str = "config.json"):
         raise RuntimeError("MID_ROI empty, check config mid_roi")
 
     if debug:
-        cv2.imwrite(os.path.join(out_root, "mid_roi.png"), mid_bgr)
+        cv2.imwrite(os.path.join(out_root, f"mid_roi_{device_id}.png"), mid_bgr)
 
     # Cache template crops from right ROIs + save
     templates_bgr: Dict[int, np.ndarray] = {}
@@ -240,7 +240,7 @@ def android_bot(screen_path: str, config_path: str = "config.json"):
         crop = screen[ry:ry+rh, rx:rx+rw]
         templates_bgr[int(tid)] = crop
         if debug:
-            cv2.imwrite(os.path.join(tpl_out_dir, f"icon_{tid:02d}.png"), crop)
+            cv2.imwrite(os.path.join(tpl_out_dir, f"icon_{tid:02d}_{device_id}.png"), crop)
 
     # Phase1: find hits; Phase2: verify hits
     all_hits: List[Hit] = []
@@ -304,9 +304,9 @@ def android_bot(screen_path: str, config_path: str = "config.json"):
                 1,
                 cv2.LINE_AA,
             )
-        cv2.imwrite(os.path.join(out_root, "debug_hits.png"), dbg)
+        cv2.imwrite(os.path.join(out_root, f"debug_hits_{device_id}.png"), dbg)
 
-        with open(os.path.join(out_root, "vision_out.json"), "w", encoding="utf-8") as f:
+        with open(os.path.join(out_root, f"vision_out_{device_id}.json"), "w", encoding="utf-8") as f:
             json.dump(vision_out, f, ensure_ascii=False, indent=2)
 
     return pairs, vision_out

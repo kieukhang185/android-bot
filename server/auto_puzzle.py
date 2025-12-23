@@ -23,6 +23,8 @@ def random_sleep(a: float, b: float):
     """Sleep for a random amount of time between a and b seconds."""
     time.sleep(random.uniform(a, b))
 
+def random_with_errors(num: int, num_errors: int):
+    return (num + random.randint(-num_errors, num_errors))
 
 def screencap(device_id: str, out_path: str) -> str:
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -211,7 +213,7 @@ def main():
     empty = f"{workdir}/empty.png"
     REAL_THRESHOLD = 0.85
     os.makedirs(workdir, exist_ok=True)
-    reset_tmp_dir(tmp)
+    # reset_tmp_dir(tmp)
 
     i = 0
     fish = 1
@@ -223,21 +225,25 @@ def main():
         # try:
         run_vision = False
         screencap(device_id, screen_path)
+        random_sleep(0.2, 0.4)
         # emit({"type": "step", "msg": "screencap_ok", "i": i, "screen": screen_path})
 
         # Check and click on 'throw btn' 798:841
         if not is_btn_absent(screen_path, btn_throw):
-            click_template(device_id, screen_path, btn_throw, REAL_THRESHOLD)
+            # btn_throw
+            tap(device_id, random_with_errors(798, 5), random_with_errors(841, 5))
+            random_sleep(0.2, 0.4)
             screencap(device_id, screen_path)
+            random_sleep(0.1, 0.2)
             if not is_btn_absent(screen_path, empty):
                 emit({"type": "error", "msg": "out_of_bait", "i": i})
             emit({"type": "step", "msg": f"started_throw: {throw}", "i": i})
             throw += 1
         else:
-            # 1464:845
             if is_btn_absent(screen_path, btn_close):
                 emit({"type": "error", "i": i, "msg": "Not in fishing position!"})
-            click_template(device_id, screen_path, btn_close, REAL_THRESHOLD)
+            # btn_done
+            tap(device_id, random_with_errors(1464, 4), random_with_errors(845, 3))
             break
 
         random_sleep(10, 12)
@@ -251,9 +257,10 @@ def main():
             if is_btn_absent(screen_path, btn_close):
                 # emit({"type": "decision","msg": "check_fishing"})
                 screencap(device_id, screen_path)
-                random_sleep(0.2, 0.4)
+                time.sleep(0.1)
                 if not is_btn_absent(screen_path, btn_done):
-                    click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
+                    # btn_done
+                    tap(device_id, random_with_errors(1464, 5), random_with_errors(845, 5))
                     # emit({"type": "step", "msg": "fishing_failed", "i": i})
                     run_vision = False
                     random_sleep(0.2, 0.4)
@@ -261,34 +268,34 @@ def main():
                 else:
                     # emit({"type": "step", "msg": "fishing_success", "i": i})
                     run_vision = True
-                    random_sleep(0.2, 0.4)
                     break
             time.sleep(waite_second)
 
         if run_vision:
-            pairs, vision_out = android_bot(screen_path)
-            swipe_pairs(device_id, pairs, duration_ms=320, jitter=8)
+            pairs, vision_out = android_bot(device_id ,screen_path)
+            swipe_pairs(device_id, pairs, duration_ms=320, jitter=2)
             # emit({"type": "step", "i": i, "msg": f"swiped {len(pairs)} pairs"})
+            random_sleep(0.5, 0.6)
             screencap(device_id, screen_path)
-            random_sleep(0.2, 0.5)
+            random_sleep(0.1, 0.2)
 
-            # Check cau ca thanh cong khong se close popup
             if not is_btn_absent(screen_path, btn_done):
-                click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
+                # btn_done
+                tap(device_id, random_with_errors(1464, 3), random_with_errors(845, 4))
                 emit({"type": "step", "i": i, "msg": "fishing_failed"})
 
             elif not is_btn_absent(screen_path, congtats):
-                # random tap outof congrats popup
-                # print("Found CONGRATS")
+                # close congrats
                 emit({"type": "step", "i": i, "msg": f"fishing_success: {fish}"})
-                tap(device_id, 1198, 743)
-                time.sleep(0.1)
-                screencap(device_id, screen_path)
-                click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
+                tap(device_id, random_with_errors(1198, 3), random_with_errors(743, 4))
+
+                # btn_done
+                time.sleep(0.2)
+                tap(device_id, random_with_errors(1464, 4), random_with_errors(845, 4))
                 time.sleep(0.4)
                 fish += 1
             else:
-                time.sleep(5)
+                time.sleep(15)
 
         # except Exception as e:
         #     emit({"type": "error", "i": i, "msg": str(e)})

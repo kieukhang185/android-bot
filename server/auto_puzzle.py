@@ -243,7 +243,7 @@ def main():
             if is_btn_absent(screen_path, btn_close):
                 emit({"type": "error", "i": i, "msg": "Not in fishing position!"})
             # btn_done
-            tap(device_id, random_with_errors(1464, 4), random_with_errors(845, 3))
+            click_template(device_id, screen_path, btn_close, REAL_THRESHOLD)
             break
 
         random_sleep(10, 12)
@@ -260,7 +260,7 @@ def main():
                 time.sleep(0.1)
                 if not is_btn_absent(screen_path, btn_done):
                     # btn_done
-                    tap(device_id, random_with_errors(1464, 5), random_with_errors(845, 5))
+                    click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
                     # emit({"type": "step", "msg": "fishing_failed", "i": i})
                     run_vision = False
                     random_sleep(0.2, 0.4)
@@ -277,12 +277,13 @@ def main():
             # emit({"type": "step", "i": i, "msg": f"swiped {len(pairs)} pairs"})
             random_sleep(0.5, 0.6)
             screencap(device_id, screen_path)
-            random_sleep(0.1, 0.2)
+            random_sleep(0.2, 0.3)
 
             if not is_btn_absent(screen_path, btn_done):
                 # btn_done
-                tap(device_id, random_with_errors(1464, 3), random_with_errors(845, 4))
+                click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
                 emit({"type": "step", "i": i, "msg": "fishing_failed"})
+                time.sleep(0.2)
 
             elif not is_btn_absent(screen_path, congtats):
                 # close congrats
@@ -290,8 +291,8 @@ def main():
                 tap(device_id, random_with_errors(1198, 3), random_with_errors(743, 4))
 
                 # btn_done
-                time.sleep(0.2)
-                tap(device_id, random_with_errors(1464, 4), random_with_errors(845, 4))
+                random_sleep(0.4, 0.5)
+                click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
                 time.sleep(0.4)
                 fish += 1
             else:

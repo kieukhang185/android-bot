@@ -260,9 +260,6 @@ def main():
             screencap(device_id, screen_path)
             random_sleep(0.2, 0.4)
             if is_btn_absent(screen_path, btn_close):
-                # emit({"type": "decision","msg": "check_fishing"})
-                screencap(device_id, screen_path)
-                time.sleep(0.1)
                 if not is_btn_absent(screen_path, btn_done):
                     # btn_done
                     click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)

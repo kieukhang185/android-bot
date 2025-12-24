@@ -27,12 +27,14 @@ def random_with_errors(num: int, num_errors: int):
     return (num + random.randint(-num_errors, num_errors))
 
 def screencap(device_id: str, out_path: str) -> str:
+    time.sleep(0.4)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     cmd = ["adb", "-s", device_id, "exec-out", "screencap", "-p"]
     with open(out_path, "wb") as f:
         p = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, timeout=30)
     if p.returncode != 0:
         raise RuntimeError(p.stderr.decode("utf-8", "ignore").strip() or "screencap failed")
+    time.sleep(0.4)
     return out_path
 
 # -------------------------
@@ -216,44 +218,47 @@ def main():
     # reset_tmp_dir(tmp)
 
     i = 0
-    fish = 1
-    throw = 1
+    fish = throw = 1
     while True:
-        t0 = 0
         # screen_path = os.path.join(tmp, f"screen_{device_id.replace(':','_')}_{i:06d}.png")
         screen_path = os.path.join(tmp, f"screen_{device_id.replace(':','_')}.png")
         # try:
         run_vision = False
         screencap(device_id, screen_path)
-        random_sleep(0.2, 0.4)
-        # emit({"type": "step", "msg": "screencap_ok", "i": i, "screen": screen_path})
+        random_sleep(0.2, 0.3)
+        emit({"type": "step", "msg": "screencap_ok", "i": i, "screen": screen_path})
 
         # Check and click on 'throw btn' 798:841
         if not is_btn_absent(screen_path, btn_throw):
             # btn_throw
             tap(device_id, random_with_errors(798, 5), random_with_errors(841, 5))
-            random_sleep(0.2, 0.4)
+            random_sleep(0.1, 0.2)
             screencap(device_id, screen_path)
             random_sleep(0.1, 0.2)
             if not is_btn_absent(screen_path, empty):
                 emit({"type": "error", "msg": "out_of_bait", "i": i})
+                break
             emit({"type": "step", "msg": f"started_throw: {throw}", "i": i})
             throw += 1
+        elif not is_btn_absent(screen_path, btn_done):
+            click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
+            emit({"type": "step", "i": i, "msg": f"clicked_done"})
+            random_sleep(0.3, 0.5)
+            continue
         else:
-            if is_btn_absent(screen_path, btn_close):
-                emit({"type": "error", "i": i, "msg": "Not in fishing position!"})
-            # btn_done
-            click_template(device_id, screen_path, btn_close, REAL_THRESHOLD)
+            emit({"type": "error", "i": i, "msg": "Not in fishing position!"})
             break
 
-        random_sleep(10, 12)
+        random_sleep(8, 10)
         max_try = 10
         waite_second = 1
         for i in range(max_try):
             if (i >=max_try):
                 emit({"type": "error", "i": i, "msg": "Error when fishing!"})
+                click_template(device_id, screen_path, btn_close, REAL_THRESHOLD)
+                emit({"type": "step", "i": i, "msg": f"clicked_done"})
             screencap(device_id, screen_path)
-            random_sleep(0.2, 0.6)
+            random_sleep(0.2, 0.4)
             if is_btn_absent(screen_path, btn_close):
                 # emit({"type": "decision","msg": "check_fishing"})
                 screencap(device_id, screen_path)
@@ -261,7 +266,7 @@ def main():
                 if not is_btn_absent(screen_path, btn_done):
                     # btn_done
                     click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
-                    # emit({"type": "step", "msg": "fishing_failed", "i": i})
+                    emit({"type": "step", "i": i, "msg": f"clicked_done"})
                     run_vision = False
                     random_sleep(0.2, 0.4)
                     break
@@ -275,15 +280,15 @@ def main():
             pairs, vision_out = android_bot(device_id ,screen_path)
             swipe_pairs(device_id, pairs, duration_ms=320, jitter=2)
             # emit({"type": "step", "i": i, "msg": f"swiped {len(pairs)} pairs"})
-            random_sleep(0.5, 0.6)
+            random_sleep(0.8, 1)
             screencap(device_id, screen_path)
-            random_sleep(0.2, 0.3)
+            random_sleep(0.4, 0.5)
 
             if not is_btn_absent(screen_path, btn_done):
                 # btn_done
                 click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
                 emit({"type": "step", "i": i, "msg": "fishing_failed"})
-                time.sleep(0.2)
+                time.sleep(0.4)
 
             elif not is_btn_absent(screen_path, congtats):
                 # close congrats
@@ -292,19 +297,25 @@ def main():
 
                 # btn_done
                 random_sleep(0.4, 0.5)
+                if is_btn_absent(screen_path, btn_done):
+                    emit({"type": "step", "i": i, "msg": f"lagging_waite"})
+                    time.sleep(1)
                 click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
+                emit({"type": "step", "i": i, "msg": f"done_game_loop"})
                 time.sleep(0.4)
                 fish += 1
             else:
+                emit({"type": "step", "i": i, "msg": f"swipe_failed_waite_15s"})
                 time.sleep(15)
+                if not is_btn_absent(screen_path, btn_done):
+                    click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
+                    emit({"type": "step", "i": i, "msg": f"clicked_done"})
+                    random_sleep(0.2, 0.4)
 
         # except Exception as e:
         #     emit({"type": "error", "i": i, "msg": str(e)})
 
         i += 1
-        dt = time.time() - t0
-        sleep_s = max(0.0, interval_ms/1000.0 - dt)
-        time.sleep(sleep_s)
 
 
 if __name__ == "__main__":

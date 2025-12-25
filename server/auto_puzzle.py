@@ -169,6 +169,35 @@ def is_btn_absent(
     return not present
 
 
+def is_btn_present_and_click(
+    device_id: str,
+    screen_bgr: np.ndarray,
+    close_tpl: str,
+    msg: str,
+    threshold: 0.85,
+    roi: Optional[Tuple[int,int,int,int]] = None,
+) -> bool:
+    """
+    True  -> btn_close NOT on screen
+    False -> btn_close IS on screen
+    """
+    for i in range(3):
+        present, score = is_template_present(
+            screen_bgr,
+            close_tpl,
+            threshold=threshold,
+            roi=roi,
+        )
+
+        if present:
+            click_template(device_id, screen_bgr, close_tpl, threshold)
+            emit({"type": "step", "msg": msg})
+            return True
+        time.sleep(0.5)
+        screencap(device_id, screen_bgr)
+    return False
+
+
 # -------------------------
 # Central loop (generic)
 # Emits JSONL (one JSON object per line) for Node to forward via SSE.
@@ -205,23 +234,24 @@ def reset_tmp_dir(tmp_dir: str):
 def main():
     args = parse_args(sys.argv)
     device_id = args["device_id"]
-    interval_ms = args["interval_ms"]
     workdir = args["workdir"]
-    tmp = f"{workdir}/tmp"
-    btn_throw = f"{workdir}/btn_throw.png"
-    btn_close = f"{workdir}/btn_close.png"
-    btn_done = f"{workdir}/btn_done.png"
-    congtats = f"{workdir}/congrats.png"
-    empty = f"{workdir}/empty.png"
-    REAL_THRESHOLD = 0.85
     os.makedirs(workdir, exist_ok=True)
+    tmp = f"{workdir}/tmp"
+    screen_path = os.path.join(tmp, f"screen_{device_id.replace(':','_')}.png")
+    screencap(device_id, screen_path)
+    screen = cv2.imread(str(screen_path))
+    sh, sw = screen.shape[:2]
+    btn_throw = f"{workdir}/btn_throw_{sw}x{sh}.png"
+    btn_close = f"{workdir}/btn_close_{sw}x{sh}.png"
+    btn_done = f"{workdir}/btn_done_{sw}x{sh}.png"
+    congtats = f"{workdir}/congrats_{sw}x{sh}.png"
+    empty = f"{workdir}/empty_{sw}x{sh}.png"
+    REAL_THRESHOLD = 0.85
     # reset_tmp_dir(tmp)
 
     i = 0
     fish = throw = 1
     while True:
-        # screen_path = os.path.join(tmp, f"screen_{device_id.replace(':','_')}_{i:06d}.png")
-        screen_path = os.path.join(tmp, f"screen_{device_id.replace(':','_')}.png")
         # try:
         run_vision = False
         screencap(device_id, screen_path)
@@ -231,7 +261,8 @@ def main():
         # Check and click on 'throw btn' 798:841
         if not is_btn_absent(screen_path, btn_throw):
             # btn_throw
-            tap(device_id, random_with_errors(798, 5), random_with_errors(841, 5))
+            click_template(device_id, screen_path, btn_throw, REAL_THRESHOLD)
+            # tap(device_id, random_with_errors(798, 5), random_with_errors(841, 5))
             random_sleep(0.1, 0.2)
             screencap(device_id, screen_path)
             random_sleep(0.1, 0.2)
@@ -268,7 +299,6 @@ def main():
                     random_sleep(0.2, 0.4)
                     break
                 else:
-                    # emit({"type": "step", "msg": "fishing_success", "i": i})
                     run_vision = True
                     break
             time.sleep(waite_second)
@@ -289,25 +319,34 @@ def main():
 
             elif not is_btn_absent(screen_path, congtats):
                 # close congrats
+                time.sleep(0.2)
                 emit({"type": "step", "i": i, "msg": f"fishing_success: {fish}"})
-                tap(device_id, random_with_errors(1198, 3), random_with_errors(743, 4))
+                w_click = sw - (sw / 8)
+                tap(device_id, random_with_errors(w_click, 3), random_with_errors(sh / 2, 20))
 
                 # btn_done
-                random_sleep(0.4, 0.5)
-                if is_btn_absent(screen_path, btn_done):
-                    emit({"type": "step", "i": i, "msg": f"lagging_waite"})
-                    time.sleep(1)
-                click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
-                emit({"type": "step", "i": i, "msg": f"done_game_loop"})
-                time.sleep(0.4)
-                fish += 1
+                for i in range(3):
+                    random_sleep(0.4, 0.5)
+                    if is_btn_absent(screen_path, btn_done):
+                        emit({"type": "step", "i": i, "msg": f"lagging_waite"})
+                        screencap(device_id, screen_path)
+                        continue
+                    click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
+                    emit({"type": "step", "i": i, "msg": f"done_game_loop"})
+                    time.sleep(0.4)
+                    fish += 1
+                    break
             else:
-                emit({"type": "step", "i": i, "msg": f"swipe_failed_waite_15s"})
-                time.sleep(15)
-                if not is_btn_absent(screen_path, btn_done):
+                for i in range(3):
+                    emit({"type": "step", "i": i, "msg": f"swipe_failed_waite_5s"})
+                    if is_btn_absent(screen_path, btn_done):
+                        time.sleep(5)
+                        screencap(device_id, screen_path)
+                        continue
                     click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
                     emit({"type": "step", "i": i, "msg": f"clicked_done"})
                     random_sleep(0.2, 0.4)
+                    break
 
         # except Exception as e:
         #     emit({"type": "error", "i": i, "msg": str(e)})

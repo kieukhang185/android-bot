@@ -52,7 +52,7 @@ function logLine(payload) {
   const type = payload.type
 
   const div = document.createElement("div");
-  div.className = "logline";
+  div.className = `logline log-${type}`;
   div.innerHTML = `<span class="t">[${escapeHtml(ts)}]</span><span class="dev">${escapeHtml(deviceId)}</span>${escapeHtml(msg)}`;
 
   logsEl.appendChild(div);

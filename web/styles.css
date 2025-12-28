@@ -112,6 +112,21 @@ button:hover { background: #262c55; }
 .logline .t { color: var(--muted); margin-right: 6px; }
 .logline .dev { color: #cbd5e1; margin-right: 6px; }
 
+.log-info {
+  color: #38ff60;
+  font-family: monospace;
+}
+
+.log-warn {
+  color: #ffc721;
+  font-family: monospace;
+}
+
+.log-error {
+  color: #ff3f52;
+  font-family: monospace;
+}
+
 .chk {
   font-size: 12px;
   color: var(--muted);

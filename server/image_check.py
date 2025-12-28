@@ -2,7 +2,7 @@ import json, os, cv2, random, time
 from typing import Dict, Any, Tuple,List
 from dataclasses import dataclass
 import numpy as np
-from utils import swipe
+from utils import swipe, load_config, pick_profile
 import argparse
 
 
@@ -28,30 +28,19 @@ def jitter_point(pt, jitter=8):
 
 def swipe_pairs(device_id: str, pairs, duration_ms=320, jitter=8):
     for (src, dst) in pairs:
+        i = 1
+        duration_ms = duration_ms - (i * random.randint(3, 6))
         sx, sy = jitter_point(src, jitter)
         tx, ty = jitter_point(dst, jitter)
         swipe(device_id, sx, sy, tx, ty, duration_ms)
         time.sleep(0.25)
+        i += 1
 
 
 def build_swipe_plan_sorted(vision_out):
     matches = vision_out.get("matches", [])
     matches = sorted(matches, key=lambda m: m["ghost_index"])
     return [(center_of_box(m["real_box"]), center_of_box(m["ghost_box"])) for m in matches]
-
-
-# ---------- config helpers ----------
-def load_config(config_path: str) -> Dict[str, Any]:
-    with open(config_path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def pick_profile(cfg: Dict[str, Any], screen_w: int, screen_h: int) -> Dict[str, Any]:
-    for p in cfg.get("profiles", []):
-        if p.get("screen", {}).get("w") == screen_w and p.get("screen", {}).get("h") == screen_h:
-            return p
-    avail = [f'{p.get("screen",{}).get("w")}x{p.get("screen",{}).get("h")}' for p in cfg.get("profiles", [])]
-    raise RuntimeError(f"No profile for {screen_w}x{screen_h}. Available: {avail}")
 
 
 def parse_profile(profile: Dict[str, Any]):
@@ -339,7 +328,7 @@ def main():
     if args.do_swipe:
         if not args.device:
             raise RuntimeError("--device is required when --do-swipe is set")
-        swipe_pairs(args.device, pairs, duration_ms=320, jitter=5)
+        swipe_pairs(args.device, pairs, duration_ms=300, jitter=5)
 
 
 if __name__ == "__main__":

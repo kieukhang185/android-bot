@@ -1,64 +1,120 @@
 #!/usr/bin/env python3
-
 import os
 import sys
 import json
 import time
-import subprocess
-from typing import Optional, List, Tuple, Dict, Any
-import shutil
-import cv2
 import random
+import shutil
+import subprocess
+from dataclasses import dataclass
+from typing import Optional, Tuple, Dict, Any, List, Union
+
+import cv2
 import numpy as np
 
-from utils import run_adb, tap
+from utils import run_adb, tap, load_config, pick_profile
 from image_check import android_bot, swipe_pairs
-import warnings
 
 
-warnings.filterwarnings("ignore", message="xFormers is not available")
+# -------------------------
+# Helpers
+# -------------------------
+def emit(obj: Dict[str, Any]) -> None:
+    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
 
 
-def random_sleep(a: float, b: float):
-    """Sleep for a random amount of time between a and b seconds."""
+def random_sleep(a: float, b: float) -> None:
     time.sleep(random.uniform(a, b))
 
-def random_with_errors(num: int, num_errors: int):
-    return (num + random.randint(-num_errors, num_errors))
 
-def screencap(device_id: str, out_path: str) -> str:
-    time.sleep(0.4)
+def jitter(val: float, err: int) -> int:
+    return int(round(val + random.randint(-err, err)))
+
+
+# -------------------------
+# Screenshot (fast path: in-memory)
+# -------------------------
+def screencap_bytes(device_id: str, timeout: int = 30) -> bytes:
+    """
+    Capture a PNG screenshot from device via adb exec-out and return raw bytes.
+    Faster than writing to disk + re-reading.
+    """
+    cmd = ["adb", "-s", device_id, "exec-out", "screencap", "-p"]
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+    if p.returncode != 0:
+        raise RuntimeError(p.stderr.decode("utf-8", "ignore").strip() or "screencap failed")
+    return p.stdout
+
+
+def decode_png(png_bytes: bytes) -> np.ndarray:
+    arr = np.frombuffer(png_bytes, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise RuntimeError("Failed to decode PNG bytes")
+    return img
+
+
+def screencap_to_file(device_id: str, out_path: str) -> str:
+    """
+    Compatibility mode: write screenshot to a file on disk (original behavior).
+    """
+    time.sleep(0.2)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     cmd = ["adb", "-s", device_id, "exec-out", "screencap", "-p"]
     with open(out_path, "wb") as f:
         p = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, timeout=30)
     if p.returncode != 0:
         raise RuntimeError(p.stderr.decode("utf-8", "ignore").strip() or "screencap failed")
-    time.sleep(0.4)
+    time.sleep(0.2)
     return out_path
 
+
 # -------------------------
-# Template matching utilities (optional)
+# Template Matching
 # -------------------------
-def read_image(path: str) -> np.ndarray:
-    img = cv2.imread(path, cv2.IMREAD_COLOR)
-    if img is None:
-        raise RuntimeError(f"Cannot read image: {path}")
-    return img
+@dataclass(frozen=True)
+class Match:
+    score: float
+    top_left: Tuple[int, int]
+    bottom_right: Tuple[int, int]
+
+    @property
+    def center(self) -> Tuple[int, int]:
+        cx = (self.top_left[0] + self.bottom_right[0]) // 2
+        cy = (self.top_left[1] + self.bottom_right[1]) // 2
+        return cx, cy
+
+
+class TemplateCache:
+    def __init__(self) -> None:
+        self._cache: Dict[str, np.ndarray] = {}
+
+    def load(self, path: str) -> np.ndarray:
+        if path in self._cache:
+            return self._cache[path]
+        img = cv2.imread(path, cv2.IMREAD_COLOR)
+        if img is None:
+            raise RuntimeError(f"Cannot read template: {path}")
+        self._cache[path] = img
+        return img
+
+
+def clamp_roi(roi: Tuple[int, int, int, int], w: int, h: int) -> Tuple[int, int, int, int]:
+    x1, y1, x2, y2 = roi
+    x1 = max(0, min(w - 1, x1))
+    y1 = max(0, min(h - 1, y1))
+    x2 = max(1, min(w, x2))
+    y2 = max(1, min(h, y2))
+    return x1, y1, x2, y2
 
 
 def match_template(
     haystack_bgr: np.ndarray,
     needle_bgr: np.ndarray,
-    roi: Optional[Tuple[int, int, int, int]] = None,  # (x1,y1,x2,y2)
+    roi: Optional[Tuple[int, int, int, int]] = None,
     method: int = cv2.TM_CCOEFF_NORMED,
-) -> Tuple[float, Tuple[int, int], Tuple[int, int]]:
-    """
-    Returns:
-      score: float
-      top_left: (x, y) in full-screen coords
-      bottom_right: (x, y) in full-screen coords
-    """
+) -> Match:
     if haystack_bgr is None or needle_bgr is None:
         raise ValueError("haystack_bgr/needle_bgr is None")
 
@@ -66,27 +122,19 @@ def match_template(
     offx, offy = 0, 0
 
     if roi is not None:
-        x1, y1, x2, y2 = roi
         hH, wH = haystack_bgr.shape[:2]
-        x1 = max(0, min(wH - 1, x1))
-        y1 = max(0, min(hH - 1, y1))
-        x2 = max(1, min(wH, x2))
-        y2 = max(1, min(hH, y2))
-
+        x1, y1, x2, y2 = clamp_roi(roi, wH, hH)
         hs = haystack_bgr[y1:y2, x1:x2]
         offx, offy = x1, y1
 
     th, tw = needle_bgr.shape[:2]
     hh, hw = hs.shape[:2]
-
-    # If template larger than search area => cannot match
     if th > hh or tw > hw:
-        return 0.0, (offx, offy), (offx, offy)
+        return Match(0.0, (offx, offy), (offx, offy))
 
     res = cv2.matchTemplate(hs, needle_bgr, method)
     min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(res)
 
-    # For SQDIFF methods: lower is better, convert to "score where higher is better"
     if method in (cv2.TM_SQDIFF, cv2.TM_SQDIFF_NORMED):
         score = float(1.0 - min_val)
         loc = min_loc
@@ -96,262 +144,255 @@ def match_template(
 
     top_left = (loc[0] + offx, loc[1] + offy)
     bottom_right = (top_left[0] + tw, top_left[1] + th)
-    return score, top_left, bottom_right
+    return Match(score=score, top_left=top_left, bottom_right=bottom_right)
 
 
-def click_template(device, screen_path, template_path, threshold=0.85):
-    if not os.path.exists(screen_path):
-        return False
-    if not os.path.exists(template_path):
-        return False
-
-    img = cv2.imread(screen_path)
-    tmpl = cv2.imread(template_path)
-    if img is None:
-        return False
-
-    # 2. Template matching
-    res = cv2.matchTemplate(img, tmpl, cv2.TM_CCOEFF_NORMED)
-    _, max_val, _, max_loc = cv2.minMaxLoc(res)
-
-    # Not found
-    if max_val < threshold:
-        return False
-
-    h, w = tmpl.shape[:2]
-    cx = max_loc[0] + w // 2
-    cy = max_loc[1] + h // 2
-
-    run_adb(["shell", "input", "tap", str(cx), str(cy)], device_id=device)
-    return True
-
-
-def is_template_present(
+def find_template(
     screen_bgr: np.ndarray,
-    template_path: str,
+    tpl_bgr: np.ndarray,
     threshold: float = 0.85,
-    roi: Optional[Tuple[int,int,int,int]] = None,
-) -> Tuple[bool, float]:
-    """
-    Returns:
-      (present, score)
-
-    present = True  -> template FOUND
-    present = False -> template NOT FOUND
-    """
-    screen = cv2.imread(screen_bgr)
-    tpl = cv2.imread(template_path)
-
-    score, _, _ = match_template(
-        haystack_bgr=screen,
-        needle_bgr=tpl,
-        roi=roi,
-    )
-
-    return (score >= threshold), score
+    roi: Optional[Tuple[int, int, int, int]] = None,
+) -> Optional[Match]:
+    m = match_template(screen_bgr, tpl_bgr, roi=roi)
+    return m if m.score >= threshold else None
 
 
-def is_btn_absent(
-    screen_bgr: np.ndarray,
-    close_tpl: str,
-    roi: Optional[Tuple[int,int,int,int]] = None,
-) -> bool:
-    """
-    True  -> btn_close NOT on screen
-    False -> btn_close IS on screen
-    """
-    present, score = is_template_present(
-        screen_bgr,
-        close_tpl,
-        threshold=0.85,
-        roi=roi,
-    )
-    return not present
+def adb_tap(device_id: str, x: int, y: int) -> None:
+    run_adb(["shell", "input", "tap", str(int(x)), str(int(y))], device_id=device_id)
 
 
-def is_btn_present_and_click(
-    device_id: str,
-    screen_bgr: np.ndarray,
-    close_tpl: str,
-    msg: str,
-    threshold: 0.85,
-    roi: Optional[Tuple[int,int,int,int]] = None,
-) -> bool:
-    """
-    True  -> btn_close NOT on screen
-    False -> btn_close IS on screen
-    """
-    for i in range(3):
-        present, score = is_template_present(
-            screen_bgr,
-            close_tpl,
-            threshold=threshold,
-            roi=roi,
+# -------------------------
+# Main bot logic
+# -------------------------
+@dataclass
+class Templates:
+    btn_throw: str
+    btn_close: str
+    btn_done: str
+    congrats: str
+    empty: str
+    waiting: str
+
+
+class AutoPuzzleBot:
+    def __init__(self, device_id: str, workdir: str, threshold: float = 0.85) -> None:
+        self.device_id = device_id
+        self.workdir = workdir
+        self.threshold = threshold
+        self.cache = TemplateCache()
+
+        os.makedirs(workdir, exist_ok=True)
+        self.tmp_dir = os.path.join(workdir, "tmp")
+        os.makedirs(self.tmp_dir, exist_ok=True)
+
+        self.screen_path = os.path.join(self.tmp_dir, f"screen_{device_id.replace(':','_')}.png")
+
+        self.fish_count = 1
+        self.throw_count = 1
+        self.loop_idx = 0
+
+        # will be set after first screenshot
+        self.sw = 0
+        self.sh = 0
+        self.tpl: Optional[Templates] = None
+
+    def capture_screen(self, save_to_disk: bool = True) -> np.ndarray:
+        if save_to_disk:
+            screencap_to_file(self.device_id, self.screen_path)
+            img = cv2.imread(self.screen_path, cv2.IMREAD_COLOR)
+            if img is None:
+                raise RuntimeError("Failed to read captured screen image from disk")
+            return img
+        else:
+            png = screencap_bytes(self.device_id)
+            img = decode_png(png)
+            return img
+
+    def init_templates(self, screen_bgr: np.ndarray) -> None:
+        self.sh, self.sw = screen_bgr.shape[:2]
+
+        # Keep your existing config/profile flow (even if not used below)
+        cfg = load_config("config.json")
+        _profile = pick_profile(cfg, self.sw, self.sh)
+
+        self.tpl = Templates(
+            btn_throw=os.path.join(self.workdir, f"btn_throw_{self.sw}x{self.sh}.png"),
+            btn_close=os.path.join(self.workdir, f"btn_close_{self.sw}x{self.sh}.png"),
+            btn_done=os.path.join(self.workdir, f"btn_done_{self.sw}x{self.sh}.png"),
+            congrats=os.path.join(self.workdir, f"congrats_{self.sw}x{self.sh}.png"),
+            empty=os.path.join(self.workdir, f"empty_{self.sw}x{self.sh}.png"),
+            waiting=os.path.join(self.workdir, f"waiting_{self.sw}x{self.sh}.png"),
         )
 
-        if present:
-            click_template(device_id, screen_bgr, close_tpl, threshold)
-            emit({"type": "step", "msg": msg})
-            return True
-        time.sleep(0.5)
-        screencap(device_id, screen_bgr)
-    return False
+        # Preload templates to fail fast if missing
+        for p in self.tpl.__dict__.values():
+            if not os.path.exists(p):
+                emit({"type": "error", "msg": f"missing_template: {p}"})
+                raise SystemExit(2)
+            self.cache.load(p)
 
+    def click_if_present(self, screen: np.ndarray, tpl_path: str, label: str) -> bool:
+        tpl = self.cache.load(tpl_path)
+        match = find_template(screen, tpl, threshold=self.threshold)
+        if not match:
+            return False
+        cx, cy = match.center
+        adb_tap(self.device_id, cx, cy)
+        emit({"type": "info", "msg": f"clicked_{label}", "score": round(match.score, 4), "center": [cx, cy]})
+        return True
 
-# -------------------------
-# Central loop (generic)
-# Emits JSONL (one JSON object per line) for Node to forward via SSE.
-# -------------------------
-def emit(obj: Dict[str, Any]):
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    def is_present(self, screen: np.ndarray, tpl_path: str) -> bool:
+        tpl = self.cache.load(tpl_path)
+        return find_template(screen, tpl, threshold=self.threshold) is not None
 
+    def run_once(self) -> None:
+        assert self.tpl is not None, "Templates not initialized"
 
-def parse_args(argv: List[str]) -> Dict[str, Any]:
-    if len(argv) < 2:
-        raise SystemExit("Usage: auto_puzzle.py <device-id> [--interval-ms N] [--workdir PATH]")
-    device_id = argv[1]
-    interval_ms = 1200
-    workdir = "templates"
-
-    if "--interval-ms" in argv:
-        interval_ms = int(argv[argv.index("--interval-ms")+1])
-    if "--workdir" in argv:
-        workdir = argv[argv.index("--workdir")+1]
-    return {"device_id": device_id, "interval_ms": interval_ms, "workdir": workdir}
-
-
-def reset_tmp_dir(tmp_dir: str):
-    """
-    Remove and recreate tmp directory.
-    Safe to call at game start.
-    """
-    if os.path.exists(tmp_dir):
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-    os.makedirs(tmp_dir, exist_ok=True)
-
-
-def main():
-    args = parse_args(sys.argv)
-    device_id = args["device_id"]
-    workdir = args["workdir"]
-    os.makedirs(workdir, exist_ok=True)
-    tmp = f"{workdir}/tmp"
-    screen_path = os.path.join(tmp, f"screen_{device_id.replace(':','_')}.png")
-    screencap(device_id, screen_path)
-    screen = cv2.imread(str(screen_path))
-    sh, sw = screen.shape[:2]
-    btn_throw = f"{workdir}/btn_throw_{sw}x{sh}.png"
-    btn_close = f"{workdir}/btn_close_{sw}x{sh}.png"
-    btn_done = f"{workdir}/btn_done_{sw}x{sh}.png"
-    congtats = f"{workdir}/congrats_{sw}x{sh}.png"
-    empty = f"{workdir}/empty_{sw}x{sh}.png"
-    REAL_THRESHOLD = 0.85
-    # reset_tmp_dir(tmp)
-
-    i = 0
-    fish = throw = 1
-    while True:
-        # try:
-        run_vision = False
-        screencap(device_id, screen_path)
+        # capture
+        screen = self.capture_screen(save_to_disk=True)
+        emit({"type": "info", "msg": "screencap_ok", "i": self.loop_idx, "screen": self.screen_path})
         random_sleep(0.2, 0.3)
-        emit({"type": "step", "msg": "screencap_ok", "i": i, "screen": screen_path})
 
-        # Check and click on 'throw btn' 798:841
-        if not is_btn_absent(screen_path, btn_throw):
-            # btn_throw
-            click_template(device_id, screen_path, btn_throw, REAL_THRESHOLD)
-            # tap(device_id, random_with_errors(798, 5), random_with_errors(841, 5))
-            random_sleep(0.1, 0.2)
-            screencap(device_id, screen_path)
-            random_sleep(0.1, 0.2)
-            if not is_btn_absent(screen_path, empty):
-                emit({"type": "error", "msg": "out_of_bait", "i": i})
-                break
-            emit({"type": "step", "msg": f"started_throw: {throw}", "i": i})
-            throw += 1
-        elif not is_btn_absent(screen_path, btn_done):
-            click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
-            emit({"type": "step", "i": i, "msg": f"clicked_done"})
+        # Must be at fishing position: either throw exists OR done exists
+        throw_present = self.is_present(screen, self.tpl.btn_throw)
+        done_present = self.is_present(screen, self.tpl.btn_done)
+
+        if throw_present:
+            # click throw
+            _ = self.click_if_present(screen, self.tpl.btn_throw, "throw")
+            # refresh quickly
+            screen = self.capture_screen(save_to_disk=True)
+
+            # out of bait check
+            if self.is_present(screen, self.tpl.empty):
+                emit({"type": "error", "msg": "out_of_bait", "i": self.loop_idx})
+                raise SystemExit(0)
+
+            emit({"type": "info", "msg": f"started_throw: {self.throw_count}", "i": self.loop_idx})
+            self.throw_count += 1
+
+        elif done_present:
+            self.click_if_present(screen, self.tpl.btn_done, "done")
             random_sleep(0.3, 0.5)
-            continue
+            return
         else:
-            emit({"type": "error", "i": i, "msg": "Not in fishing position!"})
-            break
+            emit({"type": "error", "i": self.loop_idx, "msg": "Not in fishing position!"})
+            raise SystemExit(1)
 
+        # wait for puzzle
         random_sleep(8, 10)
+
+        run_vision = False
         max_try = 10
-        waite_second = 1
-        for i in range(max_try):
-            if (i >=max_try):
-                emit({"type": "error", "i": i, "msg": "Error when fishing!"})
-                click_template(device_id, screen_path, btn_close, REAL_THRESHOLD)
-                emit({"type": "step", "i": i, "msg": f"clicked_done"})
-            screencap(device_id, screen_path)
+        waite_second = 1.0
+
+        for try_idx in range(max_try):
+            screen = self.capture_screen(save_to_disk=True)
             random_sleep(0.2, 0.4)
-            if is_btn_absent(screen_path, btn_close):
-                if not is_btn_absent(screen_path, btn_done):
-                    # btn_done
-                    click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
-                    emit({"type": "step", "i": i, "msg": f"clicked_done"})
+
+            close_absent = not self.is_present(screen, self.tpl.btn_close)
+            if close_absent:
+                # if close absent, maybe we can finish directly
+                if self.is_present(screen, self.tpl.btn_done):
+                    self.click_if_present(screen, self.tpl.btn_done, "done")
                     run_vision = False
                     random_sleep(0.2, 0.4)
                     break
                 else:
                     run_vision = True
                     break
+
             time.sleep(waite_second)
 
-        if run_vision:
-            pairs, vision_out = android_bot(device_id ,screen_path)
-            swipe_pairs(device_id, pairs, duration_ms=320, jitter=2)
-            # emit({"type": "step", "i": i, "msg": f"swiped {len(pairs)} pairs"})
-            random_sleep(0.8, 1)
-            screencap(device_id, screen_path)
+            if try_idx == max_try - 1:
+                emit({"type": "error", "i": self.loop_idx, "msg": "Error when fishing!"})
+                # attempt to close if stuck
+                self.click_if_present(screen, self.tpl.btn_close, "close")
+                self.click_if_present(screen, self.tpl.btn_done, "done")
+
+        if not run_vision:
+            return
+
+        # vision solve
+        pairs, _vision_out = android_bot(self.device_id, self.screen_path)
+        swipe_pairs(self.device_id, pairs, duration_ms=320, jitter=2)
+
+        random_sleep(0.8, 1.0)
+        screen = self.capture_screen(save_to_disk=True)
+        random_sleep(0.4, 0.5)
+
+        # post-vision checks
+        if self.is_present(screen, self.tpl.btn_done):
+            self.click_if_present(screen, self.tpl.btn_done, "done")
+            emit({"type": "info", "i": self.loop_idx, "msg": "fishing_failed"})
+            time.sleep(0.4)
+            return
+
+        if self.is_present(screen, self.tpl.congrats):
+            emit({"type": "info", "i": self.loop_idx, "msg": f"fishing_success: {self.fish_count}"})
+            # tap to dismiss congrats (keep your logic)
+            w_click = self.sw - (self.sw / 8)
+            tap(self.device_id, jitter(w_click, 3), jitter(self.sh / 2, 20))
             random_sleep(0.4, 0.5)
 
-            if not is_btn_absent(screen_path, btn_done):
-                # btn_done
-                click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
-                emit({"type": "step", "i": i, "msg": "fishing_failed"})
-                time.sleep(0.4)
-
-            elif not is_btn_absent(screen_path, congtats):
-                # close congrats
-                time.sleep(0.2)
-                emit({"type": "step", "i": i, "msg": f"fishing_success: {fish}"})
-                w_click = sw - (sw / 8)
-                tap(device_id, random_with_errors(w_click, 3), random_with_errors(sh / 2, 20))
-
-                # btn_done
-                for i in range(3):
+            # wait for done, then click
+            for lag_idx in range(3):
+                screen = self.capture_screen(save_to_disk=True)
+                if not self.is_present(screen, self.tpl.btn_done):
+                    emit({"type": "warn", "i": self.loop_idx, "msg": "lagging_wait"})
                     random_sleep(0.4, 0.5)
-                    if is_btn_absent(screen_path, btn_done):
-                        emit({"type": "step", "i": i, "msg": f"lagging_waite"})
-                        screencap(device_id, screen_path)
-                        continue
-                    click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
-                    emit({"type": "step", "i": i, "msg": f"done_game_loop"})
-                    time.sleep(0.4)
-                    fish += 1
-                    break
-            else:
-                for i in range(3):
-                    emit({"type": "step", "i": i, "msg": f"swipe_failed_waite_5s"})
-                    if is_btn_absent(screen_path, btn_done):
-                        time.sleep(5)
-                        screencap(device_id, screen_path)
-                        continue
-                    click_template(device_id, screen_path, btn_done, REAL_THRESHOLD)
-                    emit({"type": "step", "i": i, "msg": f"clicked_done"})
-                    random_sleep(0.2, 0.4)
-                    break
+                    continue
+                self.click_if_present(screen, self.tpl.btn_done, "done")
+                emit({"type": "info", "i": self.loop_idx, "msg": "done_game_loop"})
+                time.sleep(0.4)
+                self.fish_count += 1
+                break
+            return
 
-        # except Exception as e:
-        #     emit({"type": "error", "i": i, "msg": str(e)})
+        # fallback
+        for fallback_idx in range(3):
+            emit({"type": "warn", "i": self.loop_idx, "msg": "swipe_failed_wait_5s"})
+            screen = self.capture_screen(save_to_disk=True)
+            if not self.is_present(screen, self.tpl.btn_done):
+                time.sleep(5)
+                continue
+            self.click_if_present(screen, self.tpl.btn_done, "done")
+            random_sleep(0.2, 0.4)
+            break
 
-        i += 1
+    def run_forever(self) -> None:
+        # init on first screen
+        first = self.capture_screen(save_to_disk=True)
+        self.init_templates(first)
+
+        while True:
+            self.run_once()
+            self.loop_idx += 1
+
+
+def parse_args(argv: List[str]) -> Dict[str, Any]:
+    if len(argv) < 2:
+        raise SystemExit("Usage: auto_puzzle.py <device-id> [--workdir PATH] [--threshold FLOAT]")
+    device_id = argv[1]
+    workdir = "templates"
+    threshold = 0.85
+
+    if "--workdir" in argv:
+        workdir = argv[argv.index("--workdir") + 1]
+    if "--threshold" in argv:
+        threshold = float(argv[argv.index("--threshold") + 1])
+
+    return {"device_id": device_id, "workdir": workdir, "threshold": threshold}
+
+
+def main() -> None:
+    args = parse_args(sys.argv)
+    bot = AutoPuzzleBot(
+        device_id=args["device_id"],
+        workdir=args["workdir"],
+        threshold=args["threshold"],
+    )
+    bot.run_forever()
 
 
 if __name__ == "__main__":

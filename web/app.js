@@ -6,6 +6,8 @@ const stopAllBtn = document.getElementById("stopAll");
 const toggleLogsBtn = document.getElementById("toggleLogs");
 const clearLogsBtn = document.getElementById("clearLogs");
 const autoScrollEl = document.getElementById("autoScroll");
+const deviceAddEl = document.getElementById("deviceAdd");
+const addDeviceBtn = document.getElementById("addDeviceBtn");
 const deviceSearchEl = document.getElementById("deviceSearch");
 const logsCard = document.getElementById("logsCard");
 const logDeviceFilterEl = document.getElementById("logDeviceFilter");
@@ -48,8 +50,6 @@ function logLine(payload) {
   // message only (as before)
   const msg = payload.msg ?? payload.message ?? "";
   const type = payload.type
-  // console.log("Type ", type)
-  // if (type === "error") postJSON("/auto/stop", { deviceId: d.id });
 
   const div = document.createElement("div");
   div.className = "logline";
@@ -78,6 +78,10 @@ logDeviceFilterEl?.addEventListener("change", () => {
 });
 
 /* ---------------- devices ---------------- */
+async function addDevice(deviceId) {
+  await postJSON("/device/add", { deviceId });
+}
+
 function applyDeviceFilterAndRender() {
   const q = (deviceSearchEl?.value || "").toLowerCase().trim();
   const list = !q
@@ -198,6 +202,33 @@ es.onmessage = (e) => {
     logLine({ time: Date.now(), deviceId: "", msg: String(e.data) });
   }
 };
+
+/* ------------- adb add device ------------- */
+async function onAddDevice() {
+  const id = (deviceAddEl.value || "").trim();
+  if (!id) return;
+
+  addDeviceBtn.disabled = true;
+  try {
+    const r = await addDevice(id);
+    if (r?.error) {
+      alert(r.error);
+      return;
+    }
+    await fetchDevices();
+  } catch (e) {
+    console.error(e);
+    alert("Add device failed. Check endpoint /devices/add and payload {deviceId}.");
+  } finally {
+    addDeviceBtn.disabled = false;
+  }
+}
+
+addDeviceBtn?.addEventListener("click", onAddDevice);
+
+deviceAddEl?.addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") onAddDevice();
+});
 
 /* ---------------- init ---------------- */
 fetchDevices();

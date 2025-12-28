@@ -87,6 +87,9 @@ button:hover { background: #262c55; }
   gap: 10px;
   font-size: 13px;
 }
+
+#deviceAdd { width: 190px; }
+
 .device:last-child { border-bottom: none; }
 
 .device-left { display: flex; flex-direction: column; gap: 2px; }

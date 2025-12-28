@@ -1,4 +1,5 @@
 import { execFile } from "child_process";
+import { resolve } from "dns";
 import fs from "fs";
 
 export function adbDevices() {
@@ -11,6 +12,28 @@ export function adbDevices() {
         .filter((parts) => parts[0])
         .map(([id, status]) => ({ id, status }));
       resolve(devices);
+    });
+  });
+}
+
+export function addDevice(deviceId) {
+  return new Promise((resolve, reject) => {
+    const adb = execFile("adb", ["connect", deviceId], { windowsHide: true });
+
+    // Nếu bạn có stream out thì pipe, không thì console
+    if (typeof out !== "undefined" && out?.writable) {
+      adb.stdout?.pipe(out);
+      adb.stderr?.pipe(out);
+    } else {
+      adb.stdout?.on("data", (d) => process.stdout.write(d));
+      adb.stderr?.on("data", (d) => process.stderr.write(d));
+    }
+
+    adb.on("error", reject);
+
+    adb.on("close", (code) => {
+      if (code !== 0) return reject(new Error(`adb add device failed (code=${code})`));
+      resolve({ ok: true, deviceId });
     });
   });
 }

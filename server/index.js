@@ -3,7 +3,7 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 
-import { adbDevices } from "./adb.js";
+import { adbDevices, addDevice } from "./adb.js";
 import { addSseClient, startAuto, stopAuto, getSessionStatuses } from "./proc_manager.js";
 
 const app = express();
@@ -39,6 +39,18 @@ app.get("/devices", async (req, res) => {
     res.json(merged);
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/device/add", async (req, res) => {
+  try {
+    const { deviceId } = req.body;
+    if (!deviceId) return res.status(200).json({ error: "deviceId required" });
+
+    const r = await addDevice(deviceId);   // ✅ await
+    res.json(r);
+  } catch (e) {
+    res.status(200).json({ error: String(e.message || e) });
   }
 });
 

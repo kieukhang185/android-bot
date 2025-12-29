@@ -44,11 +44,13 @@ def build_swipe_plan_sorted(vision_out):
 
 
 def parse_profile(profile: Dict[str, Any]):
+    # pixel here for cut on inage -> move to persent for central later
     right = profile["right_icons"]["rois"]
     if len(right) != 6:
         raise ValueError("right_icons.rois must have exactly 6 items")
     right_rois = [(int(r["x"]), int(r["y"]), int(r["w"]), int(r["h"])) for r in right]
 
+    # pixel here for cut on inage -> move to persent for central later
     m = profile["mid_roi"]
     mid_roi = (int(m["x"]), int(m["y"]), int(m["w"]), int(m["h"]))
 

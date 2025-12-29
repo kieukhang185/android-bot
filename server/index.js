@@ -47,7 +47,7 @@ app.post("/device/add", async (req, res) => {
     const { deviceId } = req.body;
     if (!deviceId) return res.status(200).json({ error: "deviceId required" });
 
-    const r = await addDevice(deviceId);   // ✅ await
+    const r = await addDevice(deviceId);
     res.json(r);
   } catch (e) {
     res.status(200).json({ error: String(e.message || e) });

@@ -20,7 +20,6 @@ export function addDevice(deviceId) {
   return new Promise((resolve, reject) => {
     const adb = execFile("adb", ["connect", deviceId], { windowsHide: true });
 
-    // Nếu bạn có stream out thì pipe, không thì console
     if (typeof out !== "undefined" && out?.writable) {
       adb.stdout?.pipe(out);
       adb.stderr?.pipe(out);

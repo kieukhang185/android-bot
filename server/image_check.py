@@ -33,7 +33,7 @@ def swipe_pairs(device_id: str, pairs, duration_ms=320, jitter=8):
         sx, sy = jitter_point(src, jitter)
         tx, ty = jitter_point(dst, jitter)
         swipe(device_id, sx, sy, tx, ty, duration_ms)
-        time.sleep(0.25)
+        time.sleep(0.3)
         i += 1
 
 

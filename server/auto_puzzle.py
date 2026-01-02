@@ -2,7 +2,7 @@
 import os
 import sys
 import json
-import time
+import time, timeit
 import random
 import shutil
 import subprocess
@@ -19,9 +19,10 @@ from image_check import android_bot, swipe_pairs
 # -------------------------
 # Helpers
 # -------------------------
-def emit(obj: Dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+def emit(obj: Dict[str, Any], debug: bool = False) -> None:
+    if debug:
+        sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
 
 
 def random_sleep(a: float, b: float) -> None:
@@ -180,6 +181,7 @@ class AutoPuzzleBot:
         self.workdir = workdir
         self.threshold = threshold
         self.cache = TemplateCache()
+        self.debug = False
 
         os.makedirs(workdir, exist_ok=True)
         self.tmp_dir = os.path.join(workdir, "tmp")
@@ -226,6 +228,7 @@ class AutoPuzzleBot:
         self.sh, self.sw = screen_bgr.shape[:2]
 
         cfg = load_config("config.json")
+        self.debug = cfg["debug"]
         self.throw_roi = self.parse_btn_config(cfg, "throw_roi")
         self.done_roi = self.parse_btn_config(cfg, "done_roi")
         self.close_roi = self.parse_btn_config(cfg, "close_roi")
@@ -254,14 +257,14 @@ class AutoPuzzleBot:
             roi: Optional[Tuple[int, int, int, int]] = None,
         ) -> bool:
         if not os.path.isfile(tpl_path):
-            emit({"type": "error", "msg": f"missing_template: {tpl_path}"})
+            emit({"type": "error", "msg": f"missing_template: {tpl_path}"}, self.debug)
         tpl = self.cache.load(tpl_path)
         match = find_template(screen, tpl, threshold=self.threshold, roi=roi)
         if not match:
             return False
         cx, cy = match.center
         adb_tap(self.device_id, cx, cy)
-        emit({"type": "info", "msg": f"clicked_{label}", "score": round(match.score, 4), "center": [cx, cy]})
+        emit({"type": "info", "msg": f"clicked_{label}", "score": round(match.score, 4), "center": [cx, cy]}, self.debug)
         return True
 
     def is_present(
@@ -270,7 +273,7 @@ class AutoPuzzleBot:
             roi: Optional[Tuple[int, int, int, int]] = None
         ) -> bool:
         if not os.path.isfile(tpl_path):
-            emit({"type": "error", "msg": f"missing_template: {tpl_path}"})
+            emit({"type": "error", "msg": f"missing_template: {tpl_path}"}, self.debug)
         tpl = self.cache.load(tpl_path)
         return find_template(screen, tpl, threshold=self.threshold, roi=roi) is not None
 
@@ -279,7 +282,7 @@ class AutoPuzzleBot:
 
         # capture
         screen = self.capture_screen(save_to_disk=True)
-        emit({"type": "info", "msg": "screencap_ok", "i": self.loop_idx, "screen": self.screen_path})
+        emit({"type": "info", "msg": "screencap_ok", "i": self.loop_idx, "screen": self.screen_path}, self.debug)
         random_sleep(0.2, 0.3)
 
         # Must be at fishing position: either throw exists OR done exists
@@ -288,8 +291,10 @@ class AutoPuzzleBot:
         waiting_present = self.is_present(screen, self.tpl.waiting)
 
         if throw_present:
-            # click throw
-            _ = self.click_if_present(screen, self.tpl.btn_throw, "throw", self.throw_roi)
+            # click throw: without roi 0.8677s, with roi 0.1224
+            start = time.perf_counter()
+            self.click_if_present(screen, self.tpl.btn_throw, "throw", self.throw_roi)
+            end = time.perf_counter()
             # refresh quickly
             screen = self.capture_screen(save_to_disk=True)
 
@@ -298,7 +303,7 @@ class AutoPuzzleBot:
                 emit({"type": "error", "msg": "out_of_bait", "i": self.loop_idx})
                 raise SystemExit(0)
 
-            emit({"type": "info", "msg": f"started_throw: {self.throw_count}", "i": self.loop_idx})
+            emit({"type": "info", "msg": f"{end - start:.4f}s: started_throw: {self.throw_count}", "i": self.loop_idx}, self.debug)
             self.throw_count += 1
 
         elif done_present:
@@ -309,7 +314,7 @@ class AutoPuzzleBot:
             random_sleep(0.3, 0.5)
             return
         else:
-            emit({"type": "error", "i": self.loop_idx, "msg": "Not in fishing position!"})
+            emit({"type": "error", "i": self.loop_idx, "msg": "Not in fishing position!"}, True)
             raise SystemExit(1)
 
         # wait for puzzle
@@ -338,7 +343,7 @@ class AutoPuzzleBot:
             time.sleep(waite_second)
 
             if try_idx == max_try - 1:
-                emit({"type": "error", "i": self.loop_idx, "msg": "Error when fishing!"})
+                emit({"type": "error", "i": self.loop_idx, "msg": "Error when fishing!"}, True)
                 # attempt to close if stuck
                 self.click_if_present(screen, self.tpl.btn_close, "close", self.close_roi)
                 self.click_if_present(screen, self.tpl.btn_done, "done", self.done_roi)
@@ -352,17 +357,19 @@ class AutoPuzzleBot:
 
         random_sleep(0.8, 1.0)
         screen = self.capture_screen(save_to_disk=True)
-        random_sleep(0.4, 0.5)
+        random_sleep(0.2, 0.3)
 
         # post-vision checks
         if self.is_present(screen, self.tpl.btn_done, self.done_roi):
+            start = time.perf_counter()
             self.click_if_present(screen, self.tpl.btn_done, "done", self.done_roi)
-            emit({"type": "info", "i": self.loop_idx, "msg": "fishing_failed"})
+            end = time.perf_counter()
+            emit({"type": "info", "i": self.loop_idx, "msg": f"{end - start:.4f}s: fishing_failed"}, self.debug)
             time.sleep(0.4)
             return
 
         if self.is_present(screen, self.tpl.congrats, self.congrats_roi):
-            emit({"type": "info", "i": self.loop_idx, "msg": f"fishing_success: {self.fish_count}"})
+            emit({"type": "info", "i": self.loop_idx, "msg": f"fishing_success: {self.fish_count}"}, self.debug)
             # tap to dismiss congrats (keep your logic)
             w_click = self.sw - (self.sw / 8)
             tap(self.device_id, jitter(w_click, 3), jitter(self.sh / 2, 20))
@@ -372,11 +379,13 @@ class AutoPuzzleBot:
             for lag_idx in range(3):
                 screen = self.capture_screen(save_to_disk=True)
                 if not self.is_present(screen, self.tpl.btn_done, self.done_roi):
-                    emit({"type": "warn", "i": self.loop_idx, "msg": "lagging_wait"})
+                    emit({"type": "warn", "i": self.loop_idx, "msg": "lagging_wait"}, self.debug)
                     random_sleep(0.4, 0.5)
                     continue
+                start = time.perf_counter()
                 self.click_if_present(screen, self.tpl.btn_done, "done", self.done_roi)
-                emit({"type": "info", "i": self.loop_idx, "msg": "done_game_loop"})
+                end = time.perf_counter()
+                emit({"type": "info", "i": self.loop_idx, "msg": f"{end - start:.4f}s: done_game_loop"}, self.debug)
                 time.sleep(0.4)
                 self.fish_count += 1
                 break
@@ -384,7 +393,7 @@ class AutoPuzzleBot:
 
         # fallback
         for fallback_idx in range(3):
-            emit({"type": "warn", "i": self.loop_idx, "msg": "swipe_failed_wait_5s"})
+            emit({"type": "warn", "i": self.loop_idx, "msg": "swipe_failed_wait_5s"}, self.debug)
             screen = self.capture_screen(save_to_disk=True)
             if not self.is_present(screen, self.tpl.btn_done, self.done_roi):
                 time.sleep(5)

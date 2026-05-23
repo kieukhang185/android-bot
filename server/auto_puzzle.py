@@ -60,14 +60,12 @@ def screencap_to_file(device_id: str, out_path: str) -> str:
     """
     Compatibility mode: write screenshot to a file on disk (original behavior).
     """
-    time.sleep(0.2)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     cmd = ["adb", "-s", device_id, "exec-out", "screencap", "-p"]
     with open(out_path, "wb") as f:
         p = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, timeout=30)
     if p.returncode != 0:
         raise RuntimeError(p.stderr.decode("utf-8", "ignore").strip() or "screencap failed")
-    time.sleep(0.2)
     return out_path
 
 
@@ -176,12 +174,14 @@ class Templates:
 
 
 class AutoPuzzleBot:
-    def __init__(self, device_id: str, workdir: str, threshold: float = 0.85) -> None:
+    ### Initialization and configuration
+    def __init__(self, device_id: str, workdir: str, threshold: float = 0.85, interval_ms: int = 1200) -> None:
         self.device_id = device_id
         self.workdir = workdir
         self.threshold = threshold
+        self.interval_ms = interval_ms
         self.cache = TemplateCache()
-        self.debug = False
+        self.debug = True
 
         os.makedirs(workdir, exist_ok=True)
         self.tmp_dir = os.path.join(workdir, "tmp")
@@ -198,12 +198,14 @@ class AutoPuzzleBot:
         self.sh = 0
         self.tpl: Optional[Templates] = None
 
-        self.throw_roi = tuple[0, 0, 0, 0]
+        self.throw_roi = (0, 0, 0, 0)
         self.done_roi = tuple[0, 0, 0, 0]
         self.close_roi = tuple[0, 0, 0, 0]
         self.congrats_roi = tuple[0, 0, 0, 0]
 
     def capture_screen(self, save_to_disk: bool = True) -> np.ndarray:
+        # Capture screen from device.
+        # By default, save to disk for compatibility with existing vision code.
         if save_to_disk:
             screencap_to_file(self.device_id, self.screen_path)
             img = cv2.imread(self.screen_path, cv2.IMREAD_COLOR)
@@ -216,6 +218,7 @@ class AutoPuzzleBot:
             return img
 
     def parse_btn_config(self, cfg: Dict[str, Any], key: str):
+        # Parse button ROI from config and convert from relative to absolute coordinates.
             key_value = cfg[key]
             return (
                 int(round(key_value["x"] * self.sw)),
@@ -225,6 +228,7 @@ class AutoPuzzleBot:
             )
 
     def init_templates(self, screen_bgr: np.ndarray) -> None:
+        # Initialize templates and ROIs based on the first captured screen.
         self.sh, self.sw = screen_bgr.shape[:2]
 
         cfg = load_config("config.json")
@@ -234,6 +238,7 @@ class AutoPuzzleBot:
         self.close_roi = self.parse_btn_config(cfg, "close_roi")
         self.congrats_roi = self.parse_btn_config(cfg, "congrats_roi")
 
+        # Construct template paths based on screen resolution
         self.tpl = Templates(
             btn_throw=os.path.join(self.workdir, f"btn_throw_{self.sw}x{self.sh}.png"),
             btn_close=os.path.join(self.workdir, f"btn_close_{self.sw}x{self.sh}.png"),
@@ -246,7 +251,7 @@ class AutoPuzzleBot:
         # Preload templates to fail fast if missing
         for p in self.tpl.__dict__.values():
             if not os.path.exists(p):
-                emit({"type": "error", "msg": f"missing_template: {p}"})
+                emit({"type": "error", "msg": f"missing_template: {p}"}, True)
                 raise SystemExit(2)
             self.cache.load(p)
 
@@ -256,8 +261,10 @@ class AutoPuzzleBot:
             label: str,
             roi: Optional[Tuple[int, int, int, int]] = None,
         ) -> bool:
+        # Check if template is present in the given screen (optionally within ROI),
+        # and click it if found.
         if not os.path.isfile(tpl_path):
-            emit({"type": "error", "msg": f"missing_template: {tpl_path}"}, self.debug)
+            emit({"type": "error", "msg": f"missing_template: {tpl_path}"}, True)
         tpl = self.cache.load(tpl_path)
         match = find_template(screen, tpl, threshold=self.threshold, roi=roi)
         if not match:
@@ -272,12 +279,14 @@ class AutoPuzzleBot:
             tpl_path: str,
             roi: Optional[Tuple[int, int, int, int]] = None
         ) -> bool:
+        # Check if template is present in the given screen (optionally within ROI).
         if not os.path.isfile(tpl_path):
-            emit({"type": "error", "msg": f"missing_template: {tpl_path}"}, self.debug)
+            emit({"type": "error", "msg": f"missing_template: {tpl_path}"}, True)
         tpl = self.cache.load(tpl_path)
         return find_template(screen, tpl, threshold=self.threshold, roi=roi) is not None
 
     def run_once(self) -> None:
+        # main logic for one fishing attempt
         assert self.tpl is not None, "Templates not initialized"
 
         # capture
@@ -300,14 +309,14 @@ class AutoPuzzleBot:
 
             # out of bait check
             if self.is_present(screen, self.tpl.empty):
-                emit({"type": "error", "msg": "out_of_bait", "i": self.loop_idx})
+                emit({"type": "error", "msg": "out_of_bait", "i": self.loop_idx}, True)
                 raise SystemExit(0)
 
             emit({"type": "info", "msg": f"{end - start:.4f}s: started_throw: {self.throw_count}", "i": self.loop_idx}, self.debug)
             self.throw_count += 1
 
         elif done_present:
-            self.click_if_present(screen, self.tpl.btn_done, "done", self.close_roi)
+            self.click_if_present(screen, self.tpl.btn_done, "done", self.done_roi)
             random_sleep(0.3, 0.5)
             return
         elif waiting_present:
@@ -324,6 +333,7 @@ class AutoPuzzleBot:
         max_try = 10
         waite_second = 1.0
 
+        # check if close button is still present (means puzzle not appeared yet)
         for try_idx in range(max_try):
             screen = self.capture_screen(save_to_disk=True)
             random_sleep(0.2, 0.4)
@@ -368,6 +378,7 @@ class AutoPuzzleBot:
             time.sleep(0.4)
             return
 
+        # check congrats: without roi 0.8634s, with roi 0.1223s
         if self.is_present(screen, self.tpl.congrats, self.congrats_roi):
             emit({"type": "info", "i": self.loop_idx, "msg": f"fishing_success: {self.fish_count}"}, self.debug)
             # tap to dismiss congrats (keep your logic)
@@ -407,32 +418,45 @@ class AutoPuzzleBot:
         first = self.capture_screen(save_to_disk=True)
         self.init_templates(first)
 
+        # main loop
         while True:
             self.run_once()
             self.loop_idx += 1
-
+            time.sleep(self.interval_ms / 1000.0)
 
 def parse_args(argv: List[str]) -> Dict[str, Any]:
+    # Simple argument parsing:
+    # expects at least device_id, with optional flags for workdir, threshold, and interval.
     if len(argv) < 2:
-        raise SystemExit("Usage: auto_puzzle.py <device-id> [--workdir PATH] [--threshold FLOAT]")
+        raise SystemExit("Usage: auto_puzzle.py <device-id> [--workdir PATH] [--threshold FLOAT] [--interval INT]")
     device_id = argv[1]
     workdir = "templates"
     threshold = 0.85
+    interval_ms = 1200
 
     if "--workdir" in argv:
         workdir = argv[argv.index("--workdir") + 1]
     if "--threshold" in argv:
         threshold = float(argv[argv.index("--threshold") + 1])
+    if "--interval" in argv:
+        interval_ms = int(argv[argv.index("--interval") + 1])
 
-    return {"device_id": device_id, "workdir": workdir, "threshold": threshold}
+    return {
+        "device_id": device_id,
+        "workdir": workdir,
+        "threshold": threshold,
+        "interval_ms": interval_ms
+    }
 
 
 def main() -> None:
+    # Main entry point: parse arguments, create bot instance, and run indefinitely.
     args = parse_args(sys.argv)
     bot = AutoPuzzleBot(
         device_id=args["device_id"],
         workdir=args["workdir"],
         threshold=args["threshold"],
+        interval_ms=args["interval_ms"]
     )
     bot.run_forever()
 

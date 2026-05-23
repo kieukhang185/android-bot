@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import json, os, cv2, random, time
 from typing import Dict, Any, Tuple,List
 from dataclasses import dataclass
@@ -14,22 +16,23 @@ class Hit:
     verify_score: float = 0.0
 
 
-# ---------- your swipe utils ----------
+# Get center point of a box defined by (x, y, w, h)
 def center_of_box(box_xywh):
     x, y, w, h = box_xywh
     return (x + w // 2, y + h // 2)
 
 
-# +-jitter
+# Add random jitter to a point (x, y) within a specified range
 def jitter_point(pt, jitter=8):
     return (pt[0] + random.randint(-jitter, jitter),
             pt[1] + random.randint(-jitter, jitter))
 
 
+# Perform swipe actions on the device for each pair of source and destination points,
+# with optional duration and jitter.
 def swipe_pairs(device_id: str, pairs, duration_ms=320, jitter=8):
-    for (src, dst) in pairs:
-        i = 1
-        duration_ms = duration_ms - (i * random.randint(3, 6))
+    for i, (src, dst) in enumerate(pairs, start=1):
+        duration_ms = max(120, duration_ms - i * random.randint(3, 6))
         sx, sy = jitter_point(src, jitter)
         tx, ty = jitter_point(dst, jitter)
         swipe(device_id, sx, sy, tx, ty, duration_ms)
@@ -37,12 +40,21 @@ def swipe_pairs(device_id: str, pairs, duration_ms=320, jitter=8):
         i += 1
 
 
+# Convert various truthy string representations to boolean True/False.
+def as_bool(v):
+    if isinstance(v, bool):
+        return v
+    return str(v).lower() in ("1", "true", "yes", "on")
+
+
+# Build a swipe plan by sorting the matches based on their ghost box's x-coordinate,
 def build_swipe_plan_sorted(vision_out):
     matches = vision_out.get("matches", [])
     matches = sorted(matches, key=lambda m: m["ghost_index"])
     return [(center_of_box(m["real_box"]), center_of_box(m["ghost_box"])) for m in matches]
 
 
+# Parse the profile configuration and extract relevant parameters.
 def parse_profile(profile: Dict[str, Any]):
     # pixel here for cut on inage -> move to persent for central later
     right = profile["right_icons"]["rois"]
@@ -59,21 +71,23 @@ def parse_profile(profile: Dict[str, Any]):
     cluster_dx = int(matching.get("cluster_delta_x", 55))
     max_hits = int(matching.get("max_hits", 20))
     blur_ksize = int(matching.get("blur_ksize", 7))
-    verify_enabled = str(matching.get("verify_enabled", "true"))
-    verify_threshold = int(matching.get("verify_threshold", 0.55))
+    verify_enabled = as_bool(matching.get("verify_enabled", True))
+    verify_threshold = float(matching.get("verify_threshold", 0.55))
     verify_method = str(matching.get("verify_method", "TM_CCOEFF_NORMED"))
-    verify_inset = int(matching.get("verify_threshold", 6))
+    verify_inset = int(matching.get("verify_inset", 6))
 
-    return right_rois, mid_roi, threshold, cluster_dx, max_hits, blur_ksize, verify_enabled, verify_threshold, verify_method, verify_inset
+    return right_rois,mid_roi, threshold, cluster_dx, max_hits, blur_ksize, verify_enabled, verify_threshold, verify_method, verify_inset
 
 
-# ---------- vision core (GRAY+BLUR template match) ----------
+# Preprocess the input image by converting it to grayscale and applying a Gaussian blur.
 def preprocess_gray_blur(img_bgr, blur_ksize: int):
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     k = blur_ksize if blur_ksize % 2 == 1 else blur_ksize + 1
     return cv2.GaussianBlur(gray, (k, k), 0)
 
 
+# Find all template matches in the mid region of the screen,
+# applying preprocessing and non-maximum suppression.
 def find_all_hits_in_mid(mid_bgr, tpl_bgr, threshold: float, max_hits: int, blur_ksize: int):
     mid = preprocess_gray_blur(mid_bgr, blur_ksize)
     tpl = preprocess_gray_blur(tpl_bgr, blur_ksize)
@@ -98,6 +112,8 @@ def find_all_hits_in_mid(mid_bgr, tpl_bgr, threshold: float, max_hits: int, blur
     return hits
 
 
+# Verify a detected hit by comparing the corresponding region in the original screen with the template,
+# using the specified method and threshold.
 def verify_hit_with_template(
         screen_bgr: np.ndarray,
         ghost_box_xywh: Tuple[int,int,int,int],
@@ -131,6 +147,9 @@ def verify_hit_with_template(
 
     return (score >= float(threshold)), float(score)
 
+
+# Cluster hits that are close to each other in the x-axis,
+# and keep only the best scoring hit in each cluster.
 def cluster_hits_by_x(all_hits, delta_x: int):
     if not all_hits:
         return []
@@ -152,6 +171,8 @@ def cluster_hits_by_x(all_hits, delta_x: int):
     return [max(c, key=best_key) for c in clusters]
 
 
+# Build the vision output dictionary containing the matches with their corresponding real
+# and ghost box coordinates, template IDs, and scores for both shape and verification.
 def make_vision_out(right_rois, hits_sorted_lr):
     matches = []
     for idx, h in enumerate(hits_sorted_lr):
@@ -167,6 +188,8 @@ def make_vision_out(right_rois, hits_sorted_lr):
     return {"matches": matches}
 
 
+# Extract HSV color features from the input BGR image,
+# focusing on non-white regions to capture color information.
 def hsv_feat(img_bgr):
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     mask = hsv[:, :, 1] > 50   # bỏ vùng trắng, giữ vùng màu
@@ -174,9 +197,14 @@ def hsv_feat(img_bgr):
         return hsv.mean(axis=(0,1))
     return hsv[mask].mean(axis=0)
 
+# Compute a distance metric between two HSV color features,
+# giving more weight to the hue component and less to saturation.
 def hsv_distance(a, b):
     return abs(a[0] - b[0]) + 0.6 * abs(a[1] - b[1])
 
+
+# Combine the shape score and color distance into a single score,
+# using specified weights and scaling for the color distance.
 def combine_score(shape_score, color_dist,
                   color_scale=120.0,
                   w_shape=0.75,
@@ -184,7 +212,9 @@ def combine_score(shape_score, color_dist,
     color_score = max(0.0, 1.0 - (color_dist / color_scale))
     return w_shape * shape_score + w_color * color_score
 
-# ---------- android_bot entrypoint ----------
+
+# Main function to process the input screen image, detect template matches,
+# verify them, and build the swipe plan.
 def android_bot(device_id: str, screen_path: str, config_path: str = "config.json"):
     if not isinstance(screen_path, (str, bytes, os.PathLike)):
         raise TypeError(f"screen_path must be a path string, got: {type(screen_path)}")
@@ -303,7 +333,8 @@ def android_bot(device_id: str, screen_path: str, config_path: str = "config.jso
     return pairs, vision_out
 
 
-# ---------- example usage ----------
+# Main entry point to run the image check independently,
+# allowing command-line arguments for screen image, config, device ID, and whether to perform swipes.
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--screen", default="screen.png")

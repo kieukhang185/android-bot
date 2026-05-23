@@ -7,7 +7,7 @@ import { adbDevices, addDevice } from "./adb.js";
 import { addSseClient, startAuto, stopAuto, getSessionStatuses } from "./proc_manager.js";
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: "http://localhost:3000" }));
 app.use(express.json());
 
 // Serve static UI
@@ -69,4 +69,6 @@ app.post("/auto/stop", (req, res) => {
 });
 
 const PORT = 3000;
-app.listen(PORT, () => console.log(`✅ Server running: http://localhost:${PORT}`));
+app.listen(PORT, "127.0.0.1", () => {
+  console.log(`✅ Server running: http://127.0.0.1:${PORT}`);
+});

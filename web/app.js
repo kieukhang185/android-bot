@@ -19,17 +19,28 @@ function fmtTime(ms) {
   if (!ms) return new Date().toLocaleTimeString();
   return new Date(ms).toLocaleTimeString();
 }
+
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (m) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
   }[m]));
 }
+
 async function postJSON(url, body) {
-  await fetch(url, {
+ const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body || {})
   });
+
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok || data.error) {
+    throw new Error(data.error || `Request failed: ${res.status}`);
+  }
+
+  return data;
+
 }
 
 /* ---------------- logs (filter by device) ---------------- */
@@ -218,7 +229,7 @@ async function onAddDevice() {
     await fetchDevices();
   } catch (e) {
     console.error(e);
-    alert("Add device failed. Check endpoint /devices/add and payload {deviceId}.");
+    alert("Add device failed. Check endpoint /device/add and payload {deviceId}.");
   } finally {
     addDeviceBtn.disabled = false;
   }

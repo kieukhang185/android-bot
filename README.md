@@ -49,22 +49,6 @@ android-bot-main/
 - Python + OpenCV image matching
 - ADB shell input for tap/swipe actions
 
-### Packages
-
-Node packages are defined in `server/package.json`:
-
-- `express`
-- `cors`
-
-Python packages are defined in `server/requirements.txt`:
-
-- `numpy`
-- `opencv-python`
-- `pillow`
-- `scipy`
-- `torch`
-- `torchvision`
-
 ## Setup
 
 ### 1. Install system tools
@@ -81,13 +65,6 @@ curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
 sudo apt install -y nodejs
 ```
 
-Or run the helper script:
-
-```bash
-chmod +x setup.sh
-./setup.sh
-```
-
 ### 2. Install project dependencies
 
 ```bash
@@ -100,6 +77,13 @@ pip install --upgrade pip wheel
 pip install -r requirements.txt
 ```
 
+Or run the helper script:
+
+```bash
+source setup.sh
+setup_all
+```
+
 ### 3. Connect a device
 
 Find your Windows Host IP inside Vagrant/WSL
@@ -107,16 +91,10 @@ Find your Windows Host IP inside Vagrant/WSL
 ip route show default | awk '{print $3}'
 ```
 
-For USB:
+Connect to a device
 
 ```bash
-adb devices
-```
-
-For wireless ADB:
-
-```bash
-adb connect <device-ip>:5555
+adb connect <device-ip>:<device-port>
 adb devices
 ```
 
@@ -150,18 +128,21 @@ Start the dashboard and API server from the `server` folder:
 cd server
 source .venv/bin/activate
 npm start
+
+# Or run
+./start.sh
 ```
 
 Open:
 
 ```text
-http://localhost:3000
+http://127.0.0.1:3000
 ```
 
 Then:
 
 1. Confirm your device appears in the device list.
-2. For wireless ADB, enter `<device-ip>:5555` and click **Add** if needed.
+2. For wireless ADB, enter `<device-ip>:<device-port>` and click **Add** if needed.
 3. Click **Start** beside a device to run automation.
 4. Click **Stop** to stop automation.
 5. Use the log panel to watch bot events.

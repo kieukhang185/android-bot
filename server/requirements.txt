@@ -1,6 +1,8 @@
-numpy
-opencv-python
-pillow
-scipy
-torch
-torchvision
+wheel==0.47.0
+opencv-python==4.13.0.92
+numpy==2.4.6
+pillow==12.2.0
+scipy==1.17.1
+--index-url https://download.pytorch.org/whl/cpu
+torch==2.12.0+cpu
+torchvision==0.27.0+cpu

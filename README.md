@@ -4,6 +4,9 @@ A small local dashboard for controlling Android devices through ADB and running 
 
 > Use this only on devices and apps you are allowed to automate.
 
+## Demo
+<img src="./src/images/demo.gif"width="500">
+
 ## Repo structure
 
 ```text
@@ -130,7 +133,7 @@ source .venv/bin/activate
 npm start
 
 # Or run
-./start.sh
+bash start.sh
 ```
 
 Open:
